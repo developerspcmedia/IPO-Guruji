@@ -1,0 +1,6 @@
+{
+  "name": "IPO Guruji",
+  "description": "Track upcoming Mainboard and SME IPOs with live subscription status, GMP trends, lot calculator, and detailed company financial reports.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}

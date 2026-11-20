@@ -1,0 +1,10 @@
+<resources>
+    <string name="app_name">IPO Guruji</string>
+    <!-- Google Mobile Ads Production AdMob IDs -->
+    <string name="admob_app_id">ca-app-pub-3318993523524673~7395215103</string>
+    <string name="admob_banner_unit_id">ca-app-pub-3318993523524673/9107752028</string>
+    <string name="admob_interstitial_unit_id">ca-app-pub-3318993523524673/8233654054</string>
+    <string name="admob_native_unit_id">ca-app-pub-3318993523524673/6776318332</string>
+    <string name="admob_app_open_unit_id">ca-app-pub-3318993523524673/8827766602</string>
+    <string name="widget_ipo_live_description">Live open IPOs, subscription status, and top GMP % at a glance.</string>
+</resources>
