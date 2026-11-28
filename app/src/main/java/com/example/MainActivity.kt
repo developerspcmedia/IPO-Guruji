@@ -17,12 +17,9 @@ import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.lifecycle.viewmodel.compose.viewModel
 import com.example.ads.AdMobManager
-import com.example.data.local.IpoDatabase
+import com.example.ads.ConsentManager
+import com.example.ai.configureAppCheck
 import com.example.data.preferences.ThemePreference
-import com.example.data.preferences.UserPreferencesRepository
-import com.example.data.repository.AllotmentRepository
-import com.example.data.repository.IpoNewsRepository
-import com.example.data.repository.IpoRepository
 import com.example.notifications.IpoNotificationManager
 import com.example.ui.navigation.AppNavigation
 import com.example.ui.screens.AppOpenSplashScreen
@@ -38,8 +35,12 @@ class MainActivity : FragmentActivity() {
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        // Configure Firebase App Check with launch intent before any UI, ViewModels, or Firebase calls
+        configureAppCheck(this, intent)
         enableEdgeToEdge()
-        AdMobManager.initialize(applicationContext)
+        ConsentManager.gatherConsent(this) {
+            AdMobManager.initialize(applicationContext)
+        }
         IpoNotificationManager.ensureChannels(applicationContext)
         IpoNotificationManager.schedulePeriodicSync(applicationContext)
         pendingNotificationIpoId = intent?.getStringExtra(IpoNotificationManager.EXTRA_IPO_ID)
@@ -53,11 +54,14 @@ class MainActivity : FragmentActivity() {
         ) == true
         pendingNewsArticleId = intent?.getStringExtra(IpoNotificationManager.EXTRA_NEWS_ARTICLE_ID)
 
-        val database = IpoDatabase.getInstance(applicationContext)
-        val ipoRepository = IpoRepository(database.ipoDao())
-        val allotmentRepository = AllotmentRepository(database.allotmentDao())
-        val newsRepository = IpoNewsRepository()
-        val preferencesRepository = UserPreferencesRepository(applicationContext)
+        val container = (application as IpoApplication).appContainer
+        val adminOverrideRepository = container.adminOverrideRepository
+        val ipoRepository = container.ipoRepository
+        val allotmentRepository = container.allotmentRepository
+        val usIpoRepository = container.usIpoRepository
+        val userProfileRepository = container.userProfileRepository
+        val newsRepository = container.newsRepository
+        val preferencesRepository = container.preferencesRepository
 
         setContent {
             val boardViewModel: IpoBoardViewModel = viewModel(
@@ -110,7 +114,10 @@ class MainActivity : FragmentActivity() {
                             boardViewModel = boardViewModel,
                             uiState = uiState,
                             ipoRepository = ipoRepository,
+                            adminOverrideRepository = adminOverrideRepository,
+                            userProfileRepository = userProfileRepository,
                             allotmentRepository = allotmentRepository,
+                            usIpoRepository = usIpoRepository,
                             pendingNotificationIpoId = pendingNotificationIpoId,
                             onConsumeNotificationIpoId = { pendingNotificationIpoId = null },
                             pendingOpenAllotmentAlerts = pendingOpenAllotmentAlerts,

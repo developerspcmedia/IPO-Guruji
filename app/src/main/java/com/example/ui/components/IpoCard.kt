@@ -23,14 +23,8 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.ArrowForward
-import androidx.compose.material.icons.outlined.AccountBalance
+import androidx.compose.material.icons.outlined.Balance
 import androidx.compose.material.icons.outlined.BookmarkBorder
-import androidx.compose.material.icons.outlined.CalendarMonth
-import androidx.compose.material.icons.outlined.CurrencyRupee
-import androidx.compose.material.icons.outlined.GridView
-import androidx.compose.material.icons.outlined.Groups
-import androidx.compose.material.icons.outlined.Info
-import androidx.compose.material.icons.outlined.Schedule
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material3.Card
@@ -55,7 +49,6 @@ import androidx.compose.ui.graphics.Path
 import androidx.compose.ui.graphics.StrokeCap
 import androidx.compose.ui.graphics.StrokeJoin
 import androidx.compose.ui.graphics.drawscope.Stroke
-import androidx.compose.ui.graphics.vector.ImageVector
 import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
@@ -66,9 +59,9 @@ import com.example.data.model.GmpPoint
 import com.example.data.model.IpoDateUtils
 import com.example.data.model.IpoEntity
 import com.example.data.model.IpoStatus
+import com.example.ui.theme.InterSans
 import com.example.ui.theme.LocalGlassStyle
 import com.example.ui.theme.LocalMarketColors
-import com.example.ui.theme.MonoNumericStyle
 import java.util.Calendar
 
 @Composable
@@ -80,42 +73,50 @@ fun IpoCard(
     isListedTab: Boolean = false,
     isBookmarked: Boolean = false,
     onToggleBookmark: (() -> Unit)? = null,
+    onCompareClick: (() -> Unit)? = null,
     compactMode: Boolean = false,
 ) {
     val marketColors = LocalMarketColors.current
     val glass = LocalGlassStyle.current
-    val isListed = isListedTab || IpoDateUtils.isCloseDatePassed(
+    val isListed = isListedTab || IpoDateUtils.isListingDateArrived(
+        listingDate = ipo.listingDate,
         closeDate = ipo.closeDate,
         status = ipo.status,
-        listingDate = ipo.listingDate,
     )
-    val isBullishGmp = ipo.gmpRupees >= 0
-    val gmpTint = if (isBullishGmp) marketColors.bullish else marketColors.bearish
-
-    val offerDateLabel = formatOfferDateLine(ipo.openDate, ipo.closeDate)
-    val priceBandLabel = if (ipo.priceHigh > 0) {
-        if (ipo.priceLow > 0 && ipo.priceLow != ipo.priceHigh) {
-            "₹${ipo.priceLow}–₹${ipo.priceHigh}"
-        } else {
-            "₹${ipo.priceHigh}"
-        }
-    } else {
-        "N/A"
+    val isAllotmentPhase = !isListed && IpoDateUtils.isInAllotmentPhase(
+        closeDate = ipo.closeDate,
+        listingDate = ipo.listingDate,
+        status = ipo.status,
+    )
+    val isBiddingOpen = !isListed && !isAllotmentPhase && IpoDateUtils.isBiddingOpenToday(
+        openDate = ipo.openDate,
+        closeDate = ipo.closeDate,
+        listingDate = ipo.listingDate,
+        status = ipo.status,
+    )
+    val isBullishGmp = ipo.gmpRupees > 0
+    val isBearishGmp = ipo.gmpRupees < 0
+    val gmpTint = when {
+        isBullishGmp -> marketColors.bullish
+        isBearishGmp -> marketColors.bearish
+        else -> MaterialTheme.colorScheme.onSurface
     }
-    val lotSizeLabel = if (ipo.lotSize > 0) ipo.lotSize.toString() else "N/A"
-    val subscriptionLabel = if (ipo.totalSubX > 0.0) formatSubX(ipo.totalSubX) else "N/A"
+
+    val startDateDisplay = formatSingleCardDate(ipo.openDate)
+    val closeDateDisplay = formatSingleCardDate(ipo.closeDate)
+    val subscriptionLabel = if (ipo.totalSubX > 0.0) formatSubX(ipo.totalSubX) else "—"
     val issueSizeLabel = if (ipo.issueSizeCr > 0.0) formatCrores(ipo.issueSizeCr) else "TBA"
-    val gmpValueLabel = "${formatRupeesSigned(ipo.gmpRupees)} (${formatPercentSigned(ipo.gmpPercent)})"
-    val urgencyBadgeLabel = remember(ipo.status, ipo.closeDate, isListed) {
-        if (!isListed && ipo.status == IpoStatus.LIVE) computeClosingUrgencyLabel(ipo.closeDate) else null
+    val gmpValueLabel = if (ipo.priceHigh == 0 && ipo.gmpRupees == 0) {
+        "TBA"
+    } else {
+        "${formatRupeesSigned(ipo.gmpRupees)} (${formatPercentSigned(ipo.gmpPercent)})"
     }
-
-    val accentEdge = when {
-        isBookmarked -> marketColors.smeBadge
-        ipo.status == IpoStatus.LIVE -> marketColors.bullish
-        ipo.status == IpoStatus.PRE_APPLY -> marketColors.smeBadge
-        else -> null
+    val urgencyBadgeLabel = remember(ipo.closeDate, isBiddingOpen) {
+        if (isBiddingOpen) computeClosingUrgencyLabel(ipo.closeDate) else null
     }
+    val neutralSubtleSurface = MaterialTheme.colorScheme.surfaceVariant.copy(
+        alpha = if (glass.isDark) 0.42f else 0.55f,
+    )
 
     Card(
         modifier = modifier
@@ -131,18 +132,17 @@ fun IpoCard(
         border = glassBorderStroke(
             glass = glass,
             width = 1.dp,
-            accentTint = accentEdge,
+            accentTint = null,
         ),
         elevation = CardDefaults.cardElevation(
-            defaultElevation = if (glass.isDark || glass.isGlass) 0.dp else 1.5.dp,
+            defaultElevation = if (glass.isDark || glass.isGlass) 0.dp else 1.dp,
         ),
     ) {
         if (compactMode) {
             CompactIpoCardBody(
                 ipo = ipo,
-                offerDateLabel = offerDateLabel,
-                priceBandLabel = priceBandLabel,
-                subscriptionLabel = subscriptionLabel,
+                startDateLabel = startDateDisplay,
+                closeDateLabel = closeDateDisplay,
                 gmpValueLabel = gmpValueLabel,
                 gmpTint = gmpTint,
                 urgencyBadgeLabel = urgencyBadgeLabel,
@@ -156,38 +156,72 @@ fun IpoCard(
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .padding(start = 16.dp, end = 16.dp, top = 16.dp, bottom = 14.dp),
+                    .padding(start = 16.dp, end = 16.dp, top = 14.dp, bottom = 14.dp),
             ) {
-                // Row 1: Crisp Logo Pill on Left + Status, Bookmark & Share Pills on Right
+                // Row 1: Logo + Company Name + Board/Status on Left, Quiet Monochrome Actions on Right
                 Row(
                     modifier = Modifier.fillMaxWidth(),
                     horizontalArrangement = Arrangement.SpaceBetween,
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
-                    CompanyLogo(
-                        logoUrl = ipo.logoUrl,
-                        companyName = ipo.companyName,
-                        shortCode = ipo.shortCode,
-                        boardType = ipo.boardType,
-                        width = 64.dp,
-                        height = 42.dp,
-                    )
+                    Row(
+                        modifier = Modifier.weight(1f),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(10.dp),
+                    ) {
+                        CompanyLogo(
+                            logoUrl = ipo.logoUrl,
+                            companyName = ipo.companyName,
+                            shortCode = ipo.shortCode,
+                            boardType = ipo.boardType,
+                            width = 50.dp,
+                            height = 38.dp,
+                        )
+                        Column(
+                            modifier = Modifier.weight(1f),
+                            verticalArrangement = Arrangement.spacedBy(4.dp),
+                        ) {
+                            Text(
+                                text = ipo.companyName,
+                                style = MaterialTheme.typography.titleMedium.copy(
+                                    fontFamily = InterSans,
+                                    fontSize = 16.sp,
+                                    lineHeight = 20.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    letterSpacing = (-0.15).sp,
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            Row(
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            ) {
+                                StatusPill(
+                                    status = ipo.status,
+                                    isAllotmentPhase = isAllotmentPhase,
+                                    isBiddingOpen = isBiddingOpen,
+                                )
+                                BoardPill(boardType = ipo.boardType, exchange = ipo.exchange)
+                            }
+                        }
+                    }
 
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                        horizontalArrangement = Arrangement.spacedBy(4.dp),
                     ) {
-                        StatusPill(status = ipo.status)
                         if (onToggleBookmark != null) {
                             Surface(
                                 onClick = onToggleBookmark,
                                 shape = CircleShape,
-                                color = if (isBookmarked) marketColors.smeContainer else glass.pillFill,
-                                border = if (isBookmarked) {
-                                    BorderStroke(0.9.dp, marketColors.smeBadge.copy(alpha = 0.55f))
+                                color = if (isBookmarked) {
+                                    MaterialTheme.colorScheme.onSurface
                                 } else {
-                                    glassBorderStroke(glass = glass, width = 0.8.dp)
+                                    neutralSubtleSurface
                                 },
+                                border = BorderStroke(0.8.dp, marketColors.border),
                                 modifier = Modifier
                                     .minimumInteractiveComponentSize()
                                     .testTag("bookmark_btn_${ipo.id}"),
@@ -203,7 +237,11 @@ fun IpoCard(
                                         } else {
                                             "Save ${ipo.companyName} to watchlist"
                                         },
-                                        tint = if (isBookmarked) marketColors.smeBadge else marketColors.mutedText,
+                                        tint = if (isBookmarked) {
+                                            MaterialTheme.colorScheme.surface
+                                        } else {
+                                            MaterialTheme.colorScheme.onSurfaceVariant
+                                        },
                                         modifier = Modifier.size(16.dp),
                                     )
                                 }
@@ -211,258 +249,142 @@ fun IpoCard(
                         }
                         Surface(
                             onClick = onShareClick,
-                            shape = RoundedCornerShape(99.dp),
-                            color = glass.pillFill,
-                            border = glassBorderStroke(glass = glass, width = 0.8.dp),
+                            shape = CircleShape,
+                            color = neutralSubtleSurface,
+                            border = BorderStroke(0.8.dp, marketColors.border),
                             modifier = Modifier
                                 .minimumInteractiveComponentSize()
                                 .testTag("share_btn_${ipo.id}"),
                         ) {
-                            Row(
-                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            Box(
+                                modifier = Modifier.padding(7.dp),
+                                contentAlignment = Alignment.Center,
                             ) {
                                 Icon(
                                     imageVector = Icons.Outlined.Share,
                                     contentDescription = "Share ${ipo.companyName} IPO",
-                                    tint = MaterialTheme.colorScheme.primary,
-                                    modifier = Modifier.size(14.dp),
-                                )
-                                Text(
-                                    text = "Share",
-                                    style = MaterialTheme.typography.labelSmall,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = MaterialTheme.colorScheme.onSurface,
+                                    tint = MaterialTheme.colorScheme.onSurfaceVariant,
+                                    modifier = Modifier.size(15.dp),
                                 )
                             }
                         }
                     }
+                }
+
+                Spacer(modifier = Modifier.height(12.dp))
+
+                // Row 2: Highlighted Start Date (Green Box) & Close Date (Red Box)
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    DateHighlightBox(
+                        label = "Start Date",
+                        dateValue = startDateDisplay,
+                        accentColor = marketColors.bullish,
+                        containerColor = marketColors.bullishContainer,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("start_date_box_${ipo.id}"),
+                    )
+                    DateHighlightBox(
+                        label = urgencyBadgeLabel ?: "Close Date",
+                        dateValue = closeDateDisplay,
+                        accentColor = marketColors.bearish,
+                        containerColor = marketColors.bearishContainer,
+                        modifier = Modifier
+                            .weight(1f)
+                            .testTag("close_date_box_${ipo.id}"),
+                    )
                 }
 
                 Spacer(modifier = Modifier.height(10.dp))
 
-                // Row 2: Company Name + Board Badge
-                Row(
+                // Row 3: Prominent GMP Highlight + Calm Neutral Secondary Metrics (Subs & Issue Size)
+                Surface(
+                    shape = RoundedCornerShape(12.dp),
+                    color = neutralSubtleSurface,
+                    border = BorderStroke(0.8.dp, marketColors.border),
                     modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                ) {
-                    Text(
-                        text = ipo.companyName,
-                        style = MaterialTheme.typography.titleMedium.copy(
-                            fontSize = 17.sp,
-                            fontWeight = FontWeight.Bold,
-                        ),
-                        color = MaterialTheme.colorScheme.onSurface,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                        modifier = Modifier.weight(1f),
-                    )
-                    BoardPill(boardType = ipo.boardType, exchange = ipo.exchange)
-                }
-
-                Spacer(modifier = Modifier.height(5.dp))
-
-                // Offer Date Line + Closing Urgency Countdown Pill
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.SpaceBetween,
                 ) {
                     Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(horizontal = 12.dp, vertical = 10.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(5.dp),
-                        modifier = Modifier.weight(1f),
                     ) {
-                        Icon(
-                            imageVector = Icons.Outlined.CalendarMonth,
-                            contentDescription = null,
-                            tint = marketColors.mutedText,
-                            modifier = Modifier.size(14.dp),
-                        )
-                        Text(
-                            text = "Offer Date: $offerDateLabel",
-                            style = MaterialTheme.typography.bodySmall,
-                            color = marketColors.mutedText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis,
-                        )
-                    }
-                    if (urgencyBadgeLabel != null) {
-                        Row(
-                            modifier = Modifier
-                                .clip(RoundedCornerShape(99.dp))
-                                .background(marketColors.liveContainer)
-                                .padding(horizontal = 8.dp, vertical = 3.dp)
-                                .testTag("urgency_badge_${ipo.id}"),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        Column(
+                            modifier = Modifier.weight(1.35f),
+                            verticalArrangement = Arrangement.spacedBy(2.dp),
                         ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Schedule,
-                                contentDescription = null,
-                                tint = marketColors.liveAccent,
-                                modifier = Modifier.size(11.dp),
-                            )
                             Text(
-                                text = urgencyBadgeLabel,
-                                style = MaterialTheme.typography.labelSmall,
-                                fontWeight = FontWeight.Bold,
-                                color = marketColors.liveAccent,
-                            )
-                        }
-                    }
-                }
-
-                Spacer(modifier = Modifier.height(12.dp))
-                HorizontalDivider(
-                    thickness = 0.6.dp,
-                    color = glass.hairline,
-                )
-                Spacer(modifier = Modifier.height(12.dp))
-
-                // Row 3: 3-Column Metrics (Offer Price | Lot Size | Subs)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.Top,
-                ) {
-                    IconMetricCell(
-                        icon = Icons.Outlined.CurrencyRupee,
-                        label = "Offer Price",
-                        value = priceBandLabel,
-                        modifier = Modifier.weight(1.1f),
-                        horizontalAlignment = Alignment.Start,
-                    )
-                    IconMetricCell(
-                        icon = Icons.Outlined.GridView,
-                        label = "Lot Size",
-                        value = lotSizeLabel,
-                        modifier = Modifier.weight(0.85f),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    )
-                    IconMetricCell(
-                        icon = Icons.Outlined.Groups,
-                        label = "Subs",
-                        value = subscriptionLabel,
-                        valueColor = if (ipo.totalSubX > 0.0) {
-                            MaterialTheme.colorScheme.onSurface
-                        } else {
-                            marketColors.mutedText
-                        },
-                        modifier = Modifier.weight(1f),
-                        horizontalAlignment = Alignment.End,
-                    )
-                }
-
-                Spacer(modifier = Modifier.height(14.dp))
-
-                // Row 4: 3-Column Metrics (Exp. Premium | Issue Size | View CTA Pill)
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.spacedBy(8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                ) {
-                    Column(
-                        modifier = Modifier.weight(1.22f),
-                        horizontalAlignment = Alignment.Start,
-                    ) {
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(4.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.Outlined.Info,
-                                contentDescription = null,
-                                tint = marketColors.mutedText,
-                                modifier = Modifier.size(12.dp),
-                            )
-                            Text(
-                                text = if (isListed) "Listing Gain" else "Exp. Premium",
-                                style = MaterialTheme.typography.labelSmall,
+                                text = if (isListed) "Listing Gain" else "GMP",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = InterSans,
+                                    fontWeight = FontWeight.Medium,
+                                ),
                                 color = marketColors.mutedText,
                                 maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
                             )
-                        }
-                        Spacer(modifier = Modifier.height(4.dp))
-                        Row(
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                        ) {
-                            Text(
-                                text = gmpValueLabel,
-                                style = MonoNumericStyle.copy(
-                                    fontSize = 13.sp,
-                                    fontWeight = FontWeight.Bold,
-                                ),
-                                color = gmpTint,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis,
-                            )
-                            if (ipo.gmpHistory.size >= 2) {
-                                GmpMiniSparkline(
-                                    history = ipo.gmpHistory,
-                                    lineColor = gmpTint,
-                                    modifier = Modifier
-                                        .width(34.dp)
-                                        .height(16.dp)
-                                        .testTag("gmp_sparkline_${ipo.id}"),
-                                )
-                            }
-                        }
-                    }
-                    IconMetricCell(
-                        icon = Icons.Outlined.AccountBalance,
-                        label = "Issue Size",
-                        value = issueSizeLabel,
-                        modifier = Modifier.weight(0.88f),
-                        horizontalAlignment = Alignment.CenterHorizontally,
-                    )
-                    Box(
-                        modifier = Modifier.weight(0.95f),
-                        contentAlignment = Alignment.CenterEnd,
-                    ) {
-                        val isActionHighlight = ipo.status == IpoStatus.LIVE || ipo.status == IpoStatus.PRE_APPLY
-                        Surface(
-                            onClick = onClick,
-                            shape = RoundedCornerShape(99.dp),
-                            color = if (isActionHighlight) {
-                                marketColors.ctaGold
-                            } else {
-                                MaterialTheme.colorScheme.primaryContainer
-                            },
-                            border = if (isActionHighlight) null else BorderStroke(0.75.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.25f)),
-                            modifier = Modifier.testTag("card_cta_${ipo.id}"),
-                        ) {
                             Row(
-                                modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp),
                                 verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                                horizontalArrangement = Arrangement.spacedBy(6.dp),
                             ) {
                                 Text(
-                                    text = if (isActionHighlight) "View IPO" else "Details",
-                                    style = MaterialTheme.typography.labelMedium,
-                                    fontWeight = FontWeight.SemiBold,
-                                    color = if (isActionHighlight) {
-                                        marketColors.ctaGoldInk
-                                    } else {
-                                        MaterialTheme.colorScheme.onPrimaryContainer
-                                    },
+                                    text = gmpValueLabel,
+                                    style = MaterialTheme.typography.titleMedium.copy(
+                                        fontFamily = InterSans,
+                                        fontSize = 15.sp,
+                                        fontWeight = FontWeight.Bold,
+                                        fontFeatureSettings = "tnum",
+                                    ),
+                                    color = gmpTint,
                                     maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                    modifier = Modifier.testTag("gmp_value_${ipo.id}"),
                                 )
-                                Icon(
-                                    imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
-                                    contentDescription = null,
-                                    tint = if (isActionHighlight) {
-                                        marketColors.ctaGoldInk
-                                    } else {
-                                        MaterialTheme.colorScheme.onPrimaryContainer
-                                    },
-                                    modifier = Modifier.size(13.dp),
-                                )
+                                if (ipo.gmpHistory.size >= 2) {
+                                    GmpMiniSparkline(
+                                        history = ipo.gmpHistory,
+                                        lineColor = gmpTint,
+                                        modifier = Modifier
+                                            .width(32.dp)
+                                            .height(15.dp)
+                                            .testTag("gmp_sparkline_${ipo.id}"),
+                                    )
+                                }
                             }
+                        }
+
+                        Box(
+                            modifier = Modifier
+                                .padding(horizontal = 10.dp)
+                                .width(1.dp)
+                                .height(28.dp)
+                                .background(marketColors.border),
+                        )
+
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            horizontalArrangement = Arrangement.SpaceBetween,
+                            verticalAlignment = Alignment.CenterVertically,
+                        ) {
+                            NeutralMetricCell(
+                                label = "Subs",
+                                value = subscriptionLabel,
+                                valueColor = if (ipo.totalSubX > 0.0) {
+                                    MaterialTheme.colorScheme.onSurface
+                                } else {
+                                    marketColors.mutedText
+                                },
+                                horizontalAlignment = Alignment.Start,
+                            )
+                            NeutralMetricCell(
+                                label = "Issue Size",
+                                value = issueSizeLabel,
+                                horizontalAlignment = Alignment.End,
+                            )
                         }
                     }
                 }
@@ -474,18 +396,12 @@ fun IpoCard(
                     } else {
                         0.0
                     }
-                    Spacer(modifier = Modifier.height(10.dp))
+                    Spacer(modifier = Modifier.height(8.dp))
                     Row(
                         modifier = Modifier
                             .fillMaxWidth()
                             .clip(RoundedCornerShape(10.dp))
-                            .background(
-                                if (isBullishGmp) {
-                                    marketColors.bullishContainer.copy(alpha = 0.65f)
-                                } else {
-                                    marketColors.bearishContainer.copy(alpha = 0.65f)
-                                },
-                            )
+                            .background(neutralSubtleSurface)
                             .padding(horizontal = 10.dp, vertical = 7.dp)
                             .testTag("listed_price_strip_${ipo.id}"),
                         horizontalArrangement = Arrangement.spacedBy(8.dp),
@@ -493,9 +409,10 @@ fun IpoCard(
                     ) {
                         Text(
                             text = "Issue ₹${ipo.priceHigh} → Listed ₹${ipo.estimatedListingPrice}",
-                            style = MonoNumericStyle.copy(
-                                fontSize = 11.5.sp,
-                                fontWeight = FontWeight.Bold,
+                            style = MaterialTheme.typography.labelMedium.copy(
+                                fontFamily = InterSans,
+                                fontWeight = FontWeight.SemiBold,
+                                fontFeatureSettings = "tnum",
                             ),
                             color = MaterialTheme.colorScheme.onSurface,
                             maxLines = 1,
@@ -504,9 +421,10 @@ fun IpoCard(
                         )
                         Text(
                             text = "Pre-GMP ${formatPercentSigned(preListingPct)}",
-                            style = MonoNumericStyle.copy(
-                                fontSize = 11.sp,
-                                fontWeight = FontWeight.SemiBold,
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = InterSans,
+                                fontWeight = FontWeight.Bold,
+                                fontFeatureSettings = "tnum",
                             ),
                             color = gmpTint,
                             maxLines = 1,
@@ -515,55 +433,272 @@ fun IpoCard(
                 }
             }
 
-            HorizontalDivider(thickness = 0.5.dp, color = glass.hairline)
+            HorizontalDivider(thickness = 0.6.dp, color = glass.hairline)
 
-            // Minimalist Frosted Card Footer Strip: Listing / Listed Date & Min Investment
+            // Calm Monochrome Card Footer Strip: Expected Listing Price + Compare + View Details
             Row(
                 modifier = Modifier
                     .fillMaxWidth()
-                    .background(MaterialTheme.colorScheme.primary.copy(alpha = if (glass.isDark) 0.14f else 0.07f))
-                    .padding(horizontal = 16.dp, vertical = 9.dp),
+                    .background(
+                        MaterialTheme.colorScheme.surfaceVariant.copy(
+                            alpha = if (glass.isDark) 0.30f else 0.42f,
+                        ),
+                    )
+                    .padding(horizontal = 14.dp, vertical = 8.dp),
                 horizontalArrangement = Arrangement.SpaceBetween,
                 verticalAlignment = Alignment.CenterVertically,
             ) {
-                Text(
-                    text = if (isListed) "Listed: ${ipo.listingDate}" else "Listing: ${ipo.listingDate}",
-                    style = MonoNumericStyle.copy(
-                        fontSize = MaterialTheme.typography.labelMedium.fontSize,
-                        fontWeight = FontWeight.SemiBold,
-                    ),
-                    color = MaterialTheme.colorScheme.primary,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                )
-                if (ipo.minInvestment > 0) {
+                if (isListed) {
                     Text(
-                        text = "Min: ${formatRupees(ipo.minInvestment)}",
-                        style = MonoNumericStyle.copy(
-                            fontSize = MaterialTheme.typography.labelSmall.fontSize,
+                        text = "Listed: ${ipo.listingDate}",
+                        style = MaterialTheme.typography.labelMedium.copy(
+                            fontFamily = InterSans,
                             fontWeight = FontWeight.Medium,
+                            fontFeatureSettings = "tnum",
                         ),
-                        color = marketColors.mutedText,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
                         maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.weight(1f),
                     )
+                } else {
+                    val expectedPriceText = if (ipo.priceHigh > 0) {
+                        formatRupees(ipo.estimatedListingPrice)
+                    } else {
+                        "TBA"
+                    }
+                    val listingDateShort = formatSingleCardDate(ipo.listingDate)
+                    Column(
+                        modifier = Modifier
+                            .weight(1f)
+                            .padding(end = 8.dp)
+                            .testTag("expected_listing_price_${ipo.id}"),
+                        verticalArrangement = Arrangement.spacedBy(1.dp),
+                    ) {
+                        Text(
+                            text = "Expected Listing Price",
+                            style = MaterialTheme.typography.labelSmall.copy(
+                                fontFamily = InterSans,
+                                fontSize = 10.5.sp,
+                                fontWeight = FontWeight.Medium,
+                            ),
+                            color = marketColors.mutedText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(5.dp),
+                        ) {
+                            Text(
+                                text = expectedPriceText,
+                                style = MaterialTheme.typography.labelMedium.copy(
+                                    fontFamily = InterSans,
+                                    fontSize = 13.sp,
+                                    fontWeight = FontWeight.Bold,
+                                    fontFeatureSettings = "tnum",
+                                ),
+                                color = MaterialTheme.colorScheme.onSurface,
+                                maxLines = 1,
+                            )
+                            if (listingDateShort != "TBA") {
+                                Text(
+                                    text = "• $listingDateShort",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = InterSans,
+                                        fontWeight = FontWeight.Medium,
+                                        fontFeatureSettings = "tnum",
+                                    ),
+                                    color = marketColors.mutedText,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis,
+                                )
+                            }
+                        }
+                    }
+                }
+
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                ) {
+                    if (onCompareClick != null) {
+                        Surface(
+                            onClick = onCompareClick,
+                            shape = RoundedCornerShape(99.dp),
+                            color = glass.cardFill,
+                            border = BorderStroke(0.9.dp, marketColors.border),
+                            modifier = Modifier
+                                .minimumInteractiveComponentSize()
+                                .testTag("compare_btn_${ipo.id}"),
+                        ) {
+                            Row(
+                                modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(4.dp),
+                            ) {
+                                Icon(
+                                    imageVector = Icons.Outlined.Balance,
+                                    contentDescription = "Compare ${ipo.companyName} IPO",
+                                    tint = MaterialTheme.colorScheme.onSurface,
+                                    modifier = Modifier.size(13.dp),
+                                )
+                                Text(
+                                    text = "Compare",
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontFamily = InterSans,
+                                        fontWeight = FontWeight.SemiBold,
+                                    ),
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                    maxLines = 1,
+                                )
+                            }
+                        }
+                    }
+
+                    val isActionHighlight = isBiddingOpen || ipo.status == IpoStatus.LIVE || ipo.status == IpoStatus.PRE_APPLY
+                    Surface(
+                        onClick = onClick,
+                        shape = RoundedCornerShape(99.dp),
+                        color = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier
+                            .minimumInteractiveComponentSize()
+                            .testTag("card_cta_${ipo.id}"),
+                    ) {
+                        Row(
+                            modifier = Modifier.padding(horizontal = 11.dp, vertical = 6.dp),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(3.dp),
+                        ) {
+                            Text(
+                                text = if (isActionHighlight) "View IPO" else "Details",
+                                style = MaterialTheme.typography.labelSmall.copy(
+                                    fontFamily = InterSans,
+                                    fontWeight = FontWeight.SemiBold,
+                                ),
+                                color = MaterialTheme.colorScheme.surface,
+                                maxLines = 1,
+                            )
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Rounded.ArrowForward,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.surface,
+                                modifier = Modifier.size(12.dp),
+                            )
+                        }
+                    }
                 }
             }
         }
     }
 }
 
-private fun formatOfferDateLine(openDate: String, closeDate: String): String {
-    val open = openDate.trim()
-    val close = closeDate.trim()
-    if (open.isBlank() || open.equals("TBA", ignoreCase = true) || open.equals("Check RHP", ignoreCase = true)) {
-        return "To Be Announced"
+@Composable
+private fun DateHighlightBox(
+    label: String,
+    dateValue: String,
+    accentColor: Color,
+    containerColor: Color,
+    modifier: Modifier = Modifier,
+) {
+    Surface(
+        modifier = modifier,
+        shape = RoundedCornerShape(12.dp),
+        color = containerColor,
+        border = BorderStroke(1.dp, accentColor.copy(alpha = 0.34f)),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 11.dp, vertical = 8.dp),
+            verticalArrangement = Arrangement.spacedBy(2.dp),
+        ) {
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(5.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(6.dp)
+                        .clip(CircleShape)
+                        .background(accentColor),
+                )
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = InterSans,
+                        fontWeight = FontWeight.SemiBold,
+                        letterSpacing = 0.2.sp,
+                    ),
+                    color = accentColor,
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
+                )
+            }
+            Text(
+                text = dateValue,
+                style = MaterialTheme.typography.titleSmall.copy(
+                    fontFamily = InterSans,
+                    fontSize = 14.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFeatureSettings = "tnum",
+                ),
+                color = accentColor,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis,
+            )
+        }
     }
-    if (close.isBlank() || close.equals("TBA", ignoreCase = true)) {
-        return open
+}
+
+@Composable
+private fun NeutralMetricCell(
+    label: String,
+    value: String,
+    modifier: Modifier = Modifier,
+    valueColor: Color = MaterialTheme.colorScheme.onSurface,
+    horizontalAlignment: Alignment.Horizontal = Alignment.Start,
+) {
+    val marketColors = LocalMarketColors.current
+    Column(
+        modifier = modifier,
+        horizontalAlignment = horizontalAlignment,
+        verticalArrangement = Arrangement.spacedBy(2.dp),
+    ) {
+        Text(
+            text = label,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = InterSans,
+                fontWeight = FontWeight.Medium,
+            ),
+            color = marketColors.mutedText,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
+        Text(
+            text = value,
+            style = MaterialTheme.typography.bodyMedium.copy(
+                fontFamily = InterSans,
+                fontSize = 13.5.sp,
+                fontWeight = FontWeight.SemiBold,
+                fontFeatureSettings = "tnum",
+            ),
+            color = valueColor,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis,
+        )
     }
-    val yearMatch = Regex("\\b(20\\d{2})\\b").find(close)?.value
-    val openClean = if (yearMatch != null) open.replace(" $yearMatch", "").trim() else open
-    return "$openClean - $close"
+}
+
+private fun formatSingleCardDate(rawDate: String): String {
+    val trimmed = rawDate.trim()
+    if (trimmed.isBlank() ||
+        trimmed.equals("TBA", ignoreCase = true) ||
+        trimmed.equals("Check RHP", ignoreCase = true)
+    ) {
+        return "TBA"
+    }
+    return trimmed
 }
 
 internal fun computeClosingUrgencyLabel(
@@ -589,9 +724,8 @@ internal fun computeClosingUrgencyLabel(
 @Composable
 private fun CompactIpoCardBody(
     ipo: IpoEntity,
-    offerDateLabel: String,
-    priceBandLabel: String,
-    subscriptionLabel: String,
+    startDateLabel: String,
+    closeDateLabel: String,
     gmpValueLabel: String,
     gmpTint: Color,
     urgencyBadgeLabel: String?,
@@ -614,12 +748,12 @@ private fun CompactIpoCardBody(
             companyName = ipo.companyName,
             shortCode = ipo.shortCode,
             boardType = ipo.boardType,
-            width = 48.dp,
+            width = 46.dp,
             height = 36.dp,
         )
         Column(
             modifier = Modifier.weight(1f),
-            verticalArrangement = Arrangement.spacedBy(3.dp),
+            verticalArrangement = Arrangement.spacedBy(5.dp),
         ) {
             Row(
                 verticalAlignment = Alignment.CenterVertically,
@@ -627,8 +761,10 @@ private fun CompactIpoCardBody(
             ) {
                 Text(
                     text = ipo.companyName,
-                    style = MaterialTheme.typography.titleSmall,
-                    fontWeight = FontWeight.Bold,
+                    style = MaterialTheme.typography.titleSmall.copy(
+                        fontFamily = InterSans,
+                        fontWeight = FontWeight.Bold,
+                    ),
                     color = MaterialTheme.colorScheme.onSurface,
                     maxLines = 1,
                     overflow = TextOverflow.Ellipsis,
@@ -636,19 +772,53 @@ private fun CompactIpoCardBody(
                 )
                 BoardPill(boardType = ipo.boardType, exchange = ipo.exchange)
             }
-            Text(
-                text = "$offerDateLabel • $priceBandLabel • Subs $subscriptionLabel",
-                style = MaterialTheme.typography.labelSmall,
-                color = marketColors.mutedText,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
+            Row(
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(6.dp),
+            ) {
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = marketColors.bullishContainer,
+                    border = BorderStroke(0.7.dp, marketColors.bullish.copy(alpha = 0.35f)),
+                ) {
+                    Text(
+                        text = startDateLabel,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = InterSans,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFeatureSettings = "tnum",
+                        ),
+                        color = marketColors.bullish,
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                }
+                Surface(
+                    shape = RoundedCornerShape(6.dp),
+                    color = marketColors.bearishContainer,
+                    border = BorderStroke(0.7.dp, marketColors.bearish.copy(alpha = 0.35f)),
+                ) {
+                    Text(
+                        text = closeDateLabel,
+                        style = MaterialTheme.typography.labelSmall.copy(
+                            fontFamily = InterSans,
+                            fontWeight = FontWeight.SemiBold,
+                            fontFeatureSettings = "tnum",
+                        ),
+                        color = marketColors.bearish,
+                        maxLines = 1,
+                        modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
+                    )
+                }
+            }
             if (urgencyBadgeLabel != null) {
                 Text(
                     text = urgencyBadgeLabel,
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = marketColors.liveAccent,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = InterSans,
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    color = marketColors.bearish,
                 )
             }
         }
@@ -658,7 +828,12 @@ private fun CompactIpoCardBody(
         ) {
             Text(
                 text = gmpValueLabel,
-                style = MonoNumericStyle.copy(fontSize = 11.5.sp, fontWeight = FontWeight.Bold),
+                style = MaterialTheme.typography.labelMedium.copy(
+                    fontFamily = InterSans,
+                    fontSize = 12.sp,
+                    fontWeight = FontWeight.Bold,
+                    fontFeatureSettings = "tnum",
+                ),
                 color = gmpTint,
                 maxLines = 1,
             )
@@ -679,14 +854,14 @@ private fun CompactIpoCardBody(
                     Surface(
                         onClick = onToggleBookmark,
                         shape = CircleShape,
-                        color = if (isBookmarked) marketColors.smeContainer else glass.pillFill,
+                        color = if (isBookmarked) MaterialTheme.colorScheme.onSurface else glass.pillFill,
                         modifier = Modifier.testTag("bookmark_btn_${ipo.id}"),
                     ) {
                         Box(modifier = Modifier.padding(4.dp)) {
                             Icon(
                                 imageVector = if (isBookmarked) Icons.Rounded.Bookmark else Icons.Outlined.BookmarkBorder,
                                 contentDescription = "Toggle bookmark",
-                                tint = if (isBookmarked) marketColors.smeBadge else marketColors.mutedText,
+                                tint = if (isBookmarked) MaterialTheme.colorScheme.surface else marketColors.mutedText,
                                 modifier = Modifier.size(14.dp),
                             )
                         }
@@ -755,52 +930,6 @@ fun GmpMiniSparkline(
 }
 
 @Composable
-private fun IconMetricCell(
-    icon: ImageVector,
-    label: String,
-    value: String,
-    modifier: Modifier = Modifier,
-    valueColor: Color = MaterialTheme.colorScheme.onSurface,
-    horizontalAlignment: Alignment.Horizontal = Alignment.Start,
-) {
-    val marketColors = LocalMarketColors.current
-    Column(
-        modifier = modifier,
-        horizontalAlignment = horizontalAlignment,
-    ) {
-        Row(
-            verticalAlignment = Alignment.CenterVertically,
-            horizontalArrangement = Arrangement.spacedBy(3.dp),
-        ) {
-            Icon(
-                imageVector = icon,
-                contentDescription = null,
-                tint = marketColors.mutedText,
-                modifier = Modifier.size(12.dp),
-            )
-            Text(
-                text = label,
-                style = MaterialTheme.typography.labelSmall,
-                color = marketColors.mutedText,
-                maxLines = 1,
-                overflow = TextOverflow.Ellipsis,
-            )
-        }
-        Spacer(modifier = Modifier.height(4.dp))
-        Text(
-            text = value,
-            style = MonoNumericStyle.copy(
-                fontSize = 13.5.sp,
-                fontWeight = FontWeight.Bold,
-            ),
-            color = valueColor,
-            maxLines = 1,
-            overflow = TextOverflow.Ellipsis,
-        )
-    }
-}
-
-@Composable
 fun CompanyMonogram(
     shortCode: String,
     boardType: BoardType,
@@ -840,9 +969,32 @@ fun CompanyMonogram(
 }
 
 @Composable
-fun StatusPill(status: IpoStatus) {
+fun StatusPill(
+    status: IpoStatus,
+    isAllotmentPhase: Boolean = false,
+    isBiddingOpen: Boolean = false,
+) {
     val marketColors = LocalMarketColors.current
-    when (status) {
+    if (isAllotmentPhase) {
+        Box(
+            modifier = Modifier
+                .clip(RoundedCornerShape(99.dp))
+                .background(marketColors.smeContainer)
+                .padding(horizontal = 8.dp, vertical = 3.dp),
+        ) {
+            Text(
+                text = "ALLOTMENT",
+                style = MaterialTheme.typography.labelSmall.copy(
+                    fontFamily = InterSans,
+                    fontWeight = FontWeight.Bold,
+                ),
+                color = marketColors.smeBadge,
+            )
+        }
+        return
+    }
+    val effectiveStatus = if (isBiddingOpen) IpoStatus.LIVE else status
+    when (effectiveStatus) {
         IpoStatus.LIVE -> {
             val infiniteTransition = rememberInfiniteTransition(label = "live_pulse")
             val pulseAlpha by infiniteTransition.animateFloat(
@@ -857,47 +1009,43 @@ fun StatusPill(status: IpoStatus) {
             Row(
                 modifier = Modifier
                     .clip(RoundedCornerShape(99.dp))
-                    .background(marketColors.liveContainer)
-                    .padding(horizontal = 9.dp, vertical = 4.dp),
-                verticalAlignment = Alignment.CenterVertically,
-                horizontalArrangement = Arrangement.spacedBy(5.dp),
-            ) {
-                Box(
-                    modifier = Modifier
-                        .size(6.dp)
-                        .alpha(pulseAlpha)
-                        .clip(CircleShape)
-                        .background(marketColors.liveAccent),
-                )
-                Text(
-                    text = "OPEN",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = marketColors.liveAccent,
-                )
-            }
-        }
-
-        IpoStatus.PRE_APPLY -> {
-            Row(
-                modifier = Modifier
-                    .clip(RoundedCornerShape(99.dp))
-                    .background(marketColors.smeContainer)
-                    .padding(horizontal = 9.dp, vertical = 4.dp),
+                    .background(marketColors.bullishContainer)
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
                 verticalAlignment = Alignment.CenterVertically,
                 horizontalArrangement = Arrangement.spacedBy(4.dp),
             ) {
                 Box(
                     modifier = Modifier
-                        .size(6.dp)
+                        .size(5.5.dp)
+                        .alpha(pulseAlpha)
                         .clip(CircleShape)
-                        .background(marketColors.smeBadge),
+                        .background(marketColors.bullish),
                 )
                 Text(
+                    text = "OPEN",
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = InterSans,
+                        fontWeight = FontWeight.Bold,
+                    ),
+                    color = marketColors.bullish,
+                )
+            }
+        }
+
+        IpoStatus.PRE_APPLY -> {
+            Box(
+                modifier = Modifier
+                    .clip(RoundedCornerShape(99.dp))
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
+            ) {
+                Text(
                     text = "PRE-APPLY",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.Bold,
-                    color = marketColors.smeBadge,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = InterSans,
+                        fontWeight = FontWeight.SemiBold,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -906,14 +1054,16 @@ fun StatusPill(status: IpoStatus) {
             Box(
                 modifier = Modifier
                     .clip(RoundedCornerShape(99.dp))
-                    .background(MaterialTheme.colorScheme.primaryContainer)
-                    .padding(horizontal = 9.dp, vertical = 4.dp),
+                    .background(MaterialTheme.colorScheme.surfaceVariant)
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
             ) {
                 Text(
                     text = "UPCOMING",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.SemiBold,
-                    color = MaterialTheme.colorScheme.primary,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = InterSans,
+                        fontWeight = FontWeight.SemiBold,
+                    ),
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
         }
@@ -923,12 +1073,14 @@ fun StatusPill(status: IpoStatus) {
                 modifier = Modifier
                     .clip(RoundedCornerShape(99.dp))
                     .background(MaterialTheme.colorScheme.surfaceVariant)
-                    .padding(horizontal = 9.dp, vertical = 4.dp),
+                    .padding(horizontal = 8.dp, vertical = 3.dp),
             ) {
                 Text(
                     text = "CLOSED",
-                    style = MaterialTheme.typography.labelSmall,
-                    fontWeight = FontWeight.SemiBold,
+                    style = MaterialTheme.typography.labelSmall.copy(
+                        fontFamily = InterSans,
+                        fontWeight = FontWeight.SemiBold,
+                    ),
                     color = MaterialTheme.colorScheme.onSurfaceVariant,
                 )
             }
@@ -938,28 +1090,19 @@ fun StatusPill(status: IpoStatus) {
 
 @Composable
 fun BoardPill(boardType: BoardType, exchange: String) {
-    val marketColors = LocalMarketColors.current
-    val bgColor = if (boardType == BoardType.SME) {
-        marketColors.smeContainer
-    } else {
-        MaterialTheme.colorScheme.surfaceVariant
-    }
-    val textColor = if (boardType == BoardType.SME) {
-        marketColors.smeBadge
-    } else {
-        MaterialTheme.colorScheme.onSurfaceVariant
-    }
     Box(
         modifier = Modifier
             .clip(RoundedCornerShape(99.dp))
-            .background(bgColor)
-            .padding(horizontal = 8.dp, vertical = 3.dp),
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(horizontal = 7.dp, vertical = 3.dp),
     ) {
         Text(
             text = exchange,
-            style = MaterialTheme.typography.labelSmall,
-            fontWeight = FontWeight.Medium,
-            color = textColor,
+            style = MaterialTheme.typography.labelSmall.copy(
+                fontFamily = InterSans,
+                fontWeight = FontWeight.Medium,
+            ),
+            color = MaterialTheme.colorScheme.onSurfaceVariant,
         )
     }
 }

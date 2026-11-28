@@ -63,7 +63,18 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.asStateFlow
 import kotlinx.coroutines.launch
+import java.util.concurrent.atomic.AtomicBoolean
 import kotlin.math.roundToInt
+
+enum class BannerAdPlacement {
+    PRIMARY,
+    SECONDARY,
+}
+
+enum class NativeAdPlacement {
+    PRIMARY,
+    SECONDARY,
+}
 
 object AdMobManager {
     private const val MIN_INTERSTITIAL_INTERVAL_MS = 45_000L
@@ -81,7 +92,7 @@ object AdMobManager {
     internal const val TEST_APP_OPEN_UNIT_ID = "ca-app-pub-3940256099942544/9257395921"
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
-    private var initialized = false
+    private val initialized = AtomicBoolean(false)
 
     private var interstitialAd: InterstitialAd? = null
     private var isLoadingInterstitial = false
@@ -114,8 +125,8 @@ object AdMobManager {
     val lastAdStatus: StateFlow<String> = _lastAdStatus.asStateFlow()
 
     fun initialize(context: Context) {
-        if (initialized) return
-        initialized = true
+        if (!ConsentManager.canRequestAds.value) return
+        if (!initialized.compareAndSet(false, true)) return
         val appContext = context.applicationContext
         if (BuildConfig.DEBUG) {
             runCatching {
@@ -136,6 +147,7 @@ object AdMobManager {
                     }
                 }
             }.onFailure {
+                initialized.set(false)
                 _lastAdStatus.value = "AdMob waiting for Play Services"
             }
         }
@@ -144,7 +156,12 @@ object AdMobManager {
     internal fun resolveBannerUnitId(
         context: Context,
         isDebug: Boolean = BuildConfig.DEBUG,
-    ): String = if (isDebug) TEST_BANNER_UNIT_ID else context.getString(R.string.admob_banner_unit_id)
+        placement: BannerAdPlacement = BannerAdPlacement.PRIMARY,
+    ): String = when {
+        isDebug -> TEST_BANNER_UNIT_ID
+        placement == BannerAdPlacement.SECONDARY -> context.getString(R.string.admob_banner_unit_id_2)
+        else -> context.getString(R.string.admob_banner_unit_id)
+    }
 
     internal fun resolveInterstitialUnitId(
         context: Context,
@@ -154,7 +171,12 @@ object AdMobManager {
     internal fun resolveNativeUnitId(
         context: Context,
         isDebug: Boolean = BuildConfig.DEBUG,
-    ): String = if (isDebug) TEST_NATIVE_UNIT_ID else context.getString(R.string.admob_native_unit_id)
+        placement: NativeAdPlacement = NativeAdPlacement.PRIMARY,
+    ): String = when {
+        isDebug -> TEST_NATIVE_UNIT_ID
+        placement == NativeAdPlacement.SECONDARY -> context.getString(R.string.admob_native_unit_id_2)
+        else -> context.getString(R.string.admob_native_unit_id)
+    }
 
     internal fun resolveAppOpenUnitId(
         context: Context,
@@ -258,6 +280,7 @@ object AdMobManager {
     }
 
     fun preloadAppOpenAd(context: Context) {
+        if (!ConsentManager.canRequestAds.value) return
         val currentAd = appOpenAd
         if (currentAd != null && isAppOpenAdFresh(appOpenLoadedAtMs)) {
             _appOpenReady.value = true
@@ -321,6 +344,10 @@ object AdMobManager {
         onImpression: () -> Unit = {},
         onFinished: () -> Unit,
     ): Boolean {
+        if (!ConsentManager.canRequestAds.value) {
+            onFinished()
+            return false
+        }
         if (isShowingFullScreenAd) {
             onFinished()
             return false
@@ -388,6 +415,7 @@ object AdMobManager {
         context: Context,
         onImpression: () -> Unit = {},
     ) {
+        if (!ConsentManager.canRequestAds.value) return
         val nowMs = System.currentTimeMillis()
         if (isShowingFullScreenAd) return
         if (lastAppOpenShownTimeMs > 0L && (nowMs - lastAppOpenShownTimeMs) < MIN_APP_OPEN_RESUME_INTERVAL_MS) {
@@ -406,6 +434,7 @@ object AdMobManager {
     }
 
     fun preloadInterstitial(context: Context) {
+        if (!ConsentManager.canRequestAds.value) return
         if (interstitialAd != null || isLoadingInterstitial) return
         val appContext = context.applicationContext
         if (!_sdkInitialized.value) {
@@ -458,6 +487,7 @@ object AdMobManager {
         detailOpenCount: Int,
         onImpression: () -> Unit,
     ) {
+        if (!ConsentManager.canRequestAds.value) return
         if (isShowingFullScreenAd) return
         val nowMs = System.currentTimeMillis()
         if (!shouldShowInterstitialForOpen(
@@ -533,6 +563,7 @@ object AdMobManager {
 @Composable
 fun AdBannerSlot(
     modifier: Modifier = Modifier,
+    placement: BannerAdPlacement = BannerAdPlacement.PRIMARY,
     onAdImpression: () -> Unit = {},
     topPaddingWhenLoadedDp: Int = 0,
     roundedCardStyle: Boolean = false,
@@ -541,6 +572,7 @@ fun AdBannerSlot(
 ) {
     AdBannerSlot(
         modifier = modifier,
+        placement = placement,
         onAdImpression = onAdImpression,
         initialLoadedForTest = false,
         onListenerReadyForTest = null,
@@ -555,6 +587,7 @@ fun AdBannerSlot(
 @Composable
 internal fun AdBannerSlot(
     modifier: Modifier = Modifier,
+    placement: BannerAdPlacement = BannerAdPlacement.PRIMARY,
     onAdImpression: () -> Unit = {},
     initialLoadedForTest: Boolean = false,
     onListenerReadyForTest: ((AdListener) -> Unit)? = null,
@@ -565,12 +598,21 @@ internal fun AdBannerSlot(
     containerTag: String = "ad_banner_container",
 ) {
     val isTestHookActive = onListenerReadyForTest != null || onLoadRequestedForTest != null
+    val canRequestAds by ConsentManager.canRequestAds.collectAsStateWithLifecycle()
+    if (!canRequestAds && !isTestHookActive) {
+        return
+    }
     val useWebViewFreeBanner = remember(isTestHookActive) {
         !isTestHookActive && BuildConfig.DEBUG && AdMobManager.isAndroidEmulator()
     }
     if (useWebViewFreeBanner) {
         CompactNativeBannerSlot(
             modifier = modifier,
+            placement = if (placement == BannerAdPlacement.SECONDARY) {
+                NativeAdPlacement.SECONDARY
+            } else {
+                NativeAdPlacement.PRIMARY
+            },
             onAdImpression = onAdImpression,
             topPaddingWhenLoadedDp = topPaddingWhenLoadedDp,
             roundedCardStyle = roundedCardStyle,
@@ -583,7 +625,9 @@ internal fun AdBannerSlot(
     val context = LocalContext.current
     val marketColors = LocalMarketColors.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val bannerUnitId = remember(context) { AdMobManager.resolveBannerUnitId(context) }
+    val bannerUnitId = remember(context, placement) {
+        AdMobManager.resolveBannerUnitId(context = context, placement = placement)
+    }
     val sdkInitialized by AdMobManager.sdkInitialized.collectAsStateWithLifecycle()
 
     var isAdLoaded by remember(bannerUnitId) { mutableStateOf(initialLoadedForTest) }

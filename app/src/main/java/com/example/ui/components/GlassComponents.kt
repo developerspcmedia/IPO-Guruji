@@ -98,14 +98,14 @@ fun GlassBackdrop(
 
 /**
  * Creates a diagonal top-left-to-bottom-right specular border brush for iOS Glass,
- * or a crisp high-definition hairline border for AMOLED Dark and Light modes.
+ * or a clean subtle hairline border for Dark Material Minimalistic and Light modes.
  */
 fun glassSpecularBorderBrush(
     glass: GlassStyle,
     accentTint: Color? = null,
 ): Brush {
     if (!glass.isGlass) {
-        val edgeColor = accentTint?.copy(alpha = if (glass.isAmoled) 0.72f else 0.45f)
+        val edgeColor = accentTint?.copy(alpha = if (glass.isDark) 0.55f else 0.45f)
             ?: glass.specularBorderTop
         return Brush.linearGradient(colors = listOf(edgeColor, glass.specularBorderBottom))
     }

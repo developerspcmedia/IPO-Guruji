@@ -23,6 +23,8 @@ import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Email
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.PrivacyTip
+import androidx.compose.material.icons.outlined.VerifiedUser
 import androidx.compose.material.icons.rounded.KeyboardArrowDown
 import androidx.compose.material.icons.rounded.KeyboardArrowUp
 import androidx.compose.material3.AlertDialog
@@ -181,15 +183,18 @@ fun PrivacyPolicyScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
 ) {
+    val context = LocalContext.current
+    val marketColors = LocalMarketColors.current
+    val supportEmail = "developers.pcmedia@gmail.com"
     val sections = remember {
         listOf(
             LegalSection(
-                heading = "1. On-Device Storage & Preferences",
-                body = "IPO Guruji stores your theme preference, watchlist bookmarks, local alert toggles, and cached IPO market snapshots strictly on your device using Android Room and DataStore. No account sign-in or registration is required.",
+                heading = "1. Optional Google Sign-In, Investor Profile & Cloud Sync",
+                body = "You can browse IPO Guruji freely as a guest without creating an account. If you choose to sign in with Google (powered by Android Credential Manager and Firebase Authentication), we receive your Google display name, email address, unique account ID, and profile photo URL. Your optional Investor Profile—display name, investor category (Retail, S-HNI, B-HNI, or Shareholder), personal investor note, saved IPO watchlist, and theme/notification preferences—is stored in a private Google Cloud Firestore document isolated strictly to your account. When you sign in, any local watchlist bookmarks on your device are merged with your cloud profile. No other user can view, list, or edit your profile, and we never sell or share your personal account information with third-party data brokers.",
             ),
             LegalSection(
                 heading = "2. Private PAN Profiles & Allotment Checks",
-                body = "If you save PAN profiles inside Allotment Alerts, they are stored strictly on your device and excluded from Android cloud backup—never uploaded to IPO Guruji servers. When you initiate an allotment status check, your PAN is transmitted over encrypted HTTPS directly to official SEBI-registered registrars (such as MUFG Intime, KFinTech, Bigshare, or Cameo) solely to fetch your allotment status. You can mask, edit, or delete saved PAN profiles inside the app at any time.",
+                body = "Saved PAN profiles inside Allotment Alerts are stored strictly on your device and excluded from Android cloud backup—they are NEVER uploaded to Firebase, Cloud Firestore, or IPO Guruji servers, even when you are signed in with Google. When you initiate an allotment status check, your PAN is transmitted over encrypted HTTPS directly to official SEBI-registered registrars (such as MUFG Intime, KFinTech, Bigshare, or Cameo) solely to retrieve your allotment result. You can mask, edit, or delete saved PAN profiles inside the app at any time.",
             ),
             LegalSection(
                 heading = "3. Biometric & Device Vault Lock",
@@ -197,31 +202,137 @@ fun PrivacyPolicyScreen(
             ),
             LegalSection(
                 heading = "4. Market Data & Independent Status",
-                body = "IPO Guruji is an independent informational utility and is not affiliated with SEBI, NSE, BSE, or any IPO registrar. The app fetches publicly available Mainboard and SME IPO schedules, live subscription feeds, news, and unofficial grey market estimates over HTTPS. Opening external registrar, exchange, or news links takes you to third-party websites governed by their own privacy policies.",
+                body = "IPO Guruji is an independent informational utility and is not affiliated with SEBI, NSE, BSE, SEC, NASDAQ, or any IPO registrar. The app fetches publicly available India Mainboard/SME and USA IPO schedules, live subscription feeds, SEC/exchange filings, news, unofficial grey market (GMP) estimates, and read-only cloud catalog corrections over encrypted HTTPS. Opening external registrar, exchange, filing, or news links takes you to third-party websites governed by their own privacy policies.",
             ),
             LegalSection(
-                heading = "5. Advertising (Google AdMob)",
-                body = "IPO Guruji displays advertisements via Google AdMob (Banner, Native, Interstitial, and App Open ads) to keep the tracker free to use. Google Mobile Ads may collect device signals, approximate location, app interactions, and Advertising ID in accordance with Google's Privacy Policy. You can reset or opt out of personalized ads anytime in Android Settings → Google → Ads.",
+                heading = "5. On-Device Storage, Watchlists & Home Widgets",
+                body = "When browsing as a guest or offline, your theme preference, compact card setting, watchlist bookmarks, Day-3 reminders, GMP watch rules, and cached IPO snapshots are stored locally on your device using Android Room and DataStore. If you add the IPO Guruji Live Radar widget to your home screen, it reads only public IPO summaries cached on your device.",
             ),
             LegalSection(
-                heading = "6. Notifications & Permissions",
-                body = "Notification permission (POST_NOTIFICATIONS on Android 13+) is completely optional and used solely for on-device alerts covering new IPOs, subscription openings, private allotment updates, and breaking IPO news.",
+                heading = "6. Advertising (Google AdMob)",
+                body = "IPO Guruji displays advertisements via Google AdMob (Banner, Native, Interstitial, and App Open ads) to keep the tracker free to use. Google Mobile Ads may collect device signals, approximate location, app interaction events, and Advertising ID in accordance with Google's Privacy Policy. You can reset or opt out of personalized advertising anytime in Android Settings → Google → Ads.",
             ),
             LegalSection(
-                heading = "7. Data Deletion & Support",
-                body = "Because all user preferences and PAN profiles remain strictly on your device, you can delete individual PAN profiles anytime inside Allotment Alerts or remove all app data by clearing storage or uninstalling the app. For privacy questions, IPO data corrections, or technical support, contact developers.pcmedia@gmail.com.",
+                heading = "7. Notifications & Background Sync Permissions",
+                body = "Notification permission (POST_NOTIFICATIONS on Android 13+) is completely optional and used solely for IPO alerts covering new IPOs, subscription openings, Day-3 closing reminders, GMP watch thresholds, private allotment updates, and India/USA IPO news. Network permissions (INTERNET and ACCESS_NETWORK_STATE) enable live market refreshes and lightweight background sync jobs for alerts and home screen widgets.",
+            ),
+            LegalSection(
+                heading = "8. Data Security, Retention & Children's Privacy",
+                body = "All network and cloud synchronization traffic is encrypted in transit over HTTPS/TLS, and Cloud Firestore security rules strictly enforce per-user authentication and account isolation. Cloud Investor Profile data is retained only while you keep an active profile; local data remains on your device until cleared or uninstalled. IPO Guruji is a financial market utility intended for adults (18+) and does not knowingly collect personal data from children under 13 (or the applicable age of digital consent in your jurisdiction).",
+            ),
+            LegalSection(
+                heading = "9. Your Controls, Data Deletion & Contact Us",
+                body = "You stay in full control of your data: sign out of Google anytime from the navigation drawer or User Profile screen, delete individual PAN profiles inside Allotment Alerts, or clear app storage / uninstall the app to erase all on-device data. To delete your cloud Investor Profile and Firebase Authentication account directly inside the app, open User Profile → Account & Cloud Data → Delete Account & Cloud Data. You can also request permanent deletion anytime via web/email by contacting $supportEmail from your signed-in Google email address—requests are completed within 7 business days. We may update this Privacy Policy as features evolve; the effective date above always reflects the latest revision.",
             ),
         )
     }
 
     LegalDocumentScreen(
         title = "Privacy Policy",
-        subtitle = "IPO Guruji • Effective 2026",
+        subtitle = "IPO Guruji • Last Updated: November 2026",
         screenTag = "privacy_policy_screen",
         backTag = "privacy_policy_back_button",
         sections = sections,
         onBack = onBack,
         modifier = modifier,
+        headerContent = {
+            Card(
+                shape = MaterialTheme.shapes.medium,
+                colors = CardDefaults.cardColors(
+                    containerColor = MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.45f),
+                ),
+                border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.35f)),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("privacy_policy_highlights_card"),
+            ) {
+                Row(
+                    modifier = Modifier.padding(14.dp),
+                    verticalAlignment = Alignment.Top,
+                    horizontalArrangement = Arrangement.spacedBy(12.dp),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.VerifiedUser,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.primary,
+                        modifier = Modifier.size(22.dp),
+                    )
+                    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                        Text(
+                            text = "Privacy at a Glance",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "• Guest browsing requires no sign-in.\n• Optional Google Sign-In syncs only your Investor Profile, watchlist & preferences privately.\n• PAN profiles stay 100% on-device and are never uploaded to the cloud.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = MaterialTheme.colorScheme.onSurfaceVariant,
+                        )
+                    }
+                }
+            }
+        },
+        footerContent = {
+            Card(
+                shape = MaterialTheme.shapes.medium,
+                colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface),
+                border = BorderStroke(1.dp, marketColors.border),
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .testTag("privacy_policy_contact_card"),
+            ) {
+                Column(
+                    modifier = Modifier.padding(16.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(8.dp),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.PrivacyTip,
+                            contentDescription = null,
+                            tint = MaterialTheme.colorScheme.primary,
+                            modifier = Modifier.size(20.dp),
+                        )
+                        Text(
+                            text = "Privacy Inquiries & Data Deletion",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    }
+                    Text(
+                        text = "Need help with your data or want your cloud profile permanently deleted? Reach our privacy team at $supportEmail.",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    )
+                    Button(
+                        onClick = {
+                            val intent = Intent(Intent.ACTION_SENDTO).apply {
+                                data = Uri.parse("mailto:$supportEmail")
+                                putExtra(
+                                    Intent.EXTRA_SUBJECT,
+                                    "IPO Guruji Privacy Inquiry / Account Deletion Request",
+                                )
+                            }
+                            runCatching { context.startActivity(intent) }
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .testTag("privacy_policy_email_button"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.Outlined.Email,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Text("Email Privacy Support")
+                    }
+                }
+            }
+        },
     )
 }
 
@@ -271,6 +382,8 @@ private fun LegalDocumentScreen(
     sections: List<LegalSection>,
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
+    headerContent: (@Composable () -> Unit)? = null,
+    footerContent: (@Composable () -> Unit)? = null,
 ) {
     val marketColors = LocalMarketColors.current
     Column(
@@ -292,10 +405,17 @@ private fun LegalDocumentScreen(
             )
 
             LazyColumn(
-                modifier = Modifier.fillMaxSize(),
+                modifier = Modifier
+                    .fillMaxSize()
+                    .testTag("${screenTag}_list"),
                 contentPadding = PaddingValues(horizontal = 16.dp, vertical = 12.dp),
                 verticalArrangement = Arrangement.spacedBy(12.dp),
             ) {
+                if (headerContent != null) {
+                    item(key = "legal_header") {
+                        headerContent()
+                    }
+                }
                 itemsIndexed(sections) { _, section ->
                     Card(
                         shape = MaterialTheme.shapes.medium,
@@ -318,6 +438,11 @@ private fun LegalDocumentScreen(
                                 color = MaterialTheme.colorScheme.onSurfaceVariant,
                             )
                         }
+                    }
+                }
+                if (footerContent != null) {
+                    item(key = "legal_footer") {
+                        footerContent()
                     }
                 }
             }

@@ -77,6 +77,7 @@ import androidx.compose.ui.unit.sp
 import com.example.data.model.IpoDateUtils
 import com.example.data.model.IpoEntity
 import com.example.data.model.IpoStatus
+import com.example.data.repository.LiveSubscriptionRepository
 import com.example.ui.components.BoardPill
 import com.example.ui.components.CompanyBannerImage
 import com.example.ui.components.CompanyLogo
@@ -166,12 +167,27 @@ internal fun DetailHeroSummaryCard(
                     width = 72.dp,
                     height = 46.dp,
                 )
+                val isAllotmentPhase = IpoDateUtils.isInAllotmentPhase(
+                    closeDate = ipo.closeDate,
+                    listingDate = ipo.listingDate,
+                    status = ipo.status,
+                )
+                val isBiddingOpen = IpoDateUtils.isBiddingOpenToday(
+                    openDate = ipo.openDate,
+                    closeDate = ipo.closeDate,
+                    listingDate = ipo.listingDate,
+                    status = ipo.status,
+                )
                 Row(
                     horizontalArrangement = Arrangement.spacedBy(6.dp),
                     verticalAlignment = Alignment.CenterVertically,
                 ) {
                     BoardPill(boardType = ipo.boardType, exchange = ipo.boardType.displayLabel)
-                    StatusPill(status = ipo.status)
+                    StatusPill(
+                        status = ipo.status,
+                        isAllotmentPhase = isAllotmentPhase,
+                        isBiddingOpen = isBiddingOpen,
+                    )
                 }
             }
 
@@ -664,7 +680,7 @@ internal fun IpoScheduleTimelineCard(
             ) { stage ->
                 Surface(
                     shape = RoundedCornerShape(12.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (glass.isAmoled) 0.85f else 0.55f),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (glass.isDark) 0.72f else 0.55f),
                     border = BorderStroke(0.8.dp, marketColors.border),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -735,6 +751,7 @@ internal fun LiveSubscriptionCard(
     isRefreshingSubscription: Boolean = false,
     subscriptionStatusMessage: String? = null,
     subscriptionSyncLabel: String? = null,
+    subscriptionSourceStatuses: String? = null,
     isAutoPollingActive: Boolean = false,
     onRefreshSubscription: () -> Unit = {},
     onVerifySubscriptionOnline: () -> Unit = {},
@@ -755,59 +772,76 @@ internal fun LiveSubscriptionCard(
         modifier = Modifier.testTag("live_subscription_card"),
     ) {
         Column(modifier = Modifier.padding(16.dp)) {
-            Row(
+            Column(
                 modifier = Modifier.fillMaxWidth(),
-                horizontalArrangement = Arrangement.SpaceBetween,
-                verticalAlignment = Alignment.CenterVertically,
+                verticalArrangement = Arrangement.spacedBy(8.dp),
             ) {
-                Column(modifier = Modifier.weight(1f)) {
-                    Row(
-                        verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(6.dp),
-                    ) {
-                        Text(
-                            text = "Live Subscription",
-                            style = MaterialTheme.typography.titleMedium,
-                            fontWeight = FontWeight.Bold,
-                            color = MaterialTheme.colorScheme.primary,
-                        )
-                        if (ipo.status == IpoStatus.LIVE) {
-                            Surface(
-                                shape = RoundedCornerShape(99.dp),
-                                color = marketColors.bullishContainer,
-                            ) {
-                                Text(
-                                    text = if (isAutoPollingActive) "AUTO-LIVE" else "LIVE",
-                                    style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.5.sp),
-                                    fontWeight = FontWeight.Bold,
-                                    color = marketColors.bullish,
-                                    modifier = Modifier.padding(horizontal = 6.dp, vertical = 2.dp),
-                                )
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically,
+                ) {
+                    Column(modifier = Modifier.weight(1f)) {
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(8.dp),
+                        ) {
+                            Text(
+                                text = "Live Subscription",
+                                style = MaterialTheme.typography.titleMedium,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.primary,
+                                maxLines = 1,
+                                softWrap = false,
+                                overflow = TextOverflow.Ellipsis,
+                            )
+                            val isLiveByDate = IpoDateUtils.isBiddingOpenToday(
+                                openDate = ipo.openDate,
+                                closeDate = ipo.closeDate,
+                                listingDate = ipo.listingDate,
+                                status = ipo.status,
+                            )
+                            if (isLiveByDate || isAutoPollingActive) {
+                                Surface(
+                                    shape = RoundedCornerShape(99.dp),
+                                    color = marketColors.bullishContainer,
+                                ) {
+                                    Text(
+                                        text = if (isAutoPollingActive) "AUTO-LIVE" else "LIVE",
+                                        style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                        fontWeight = FontWeight.Bold,
+                                        color = marketColors.bullish,
+                                        maxLines = 1,
+                                        softWrap = false,
+                                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 2.dp),
+                                    )
+                                }
                             }
                         }
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Category-Wise Subscription Status",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = marketColors.mutedText,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
                     }
-                    Text(
-                        text = "Category-Wise Subscription Status",
-                        style = MaterialTheme.typography.labelSmall,
-                        color = marketColors.mutedText,
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
                 }
 
-                Spacer(modifier = Modifier.width(6.dp))
-
                 Row(
+                    modifier = Modifier.fillMaxWidth(),
                     verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
                 ) {
                     OutlinedButton(
                         onClick = onRefreshSubscription,
                         enabled = !isRefreshingSubscription,
                         shape = RoundedCornerShape(10.dp),
                         border = BorderStroke(1.dp, marketColors.bullish.copy(alpha = 0.55f)),
-                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                         modifier = Modifier
+                            .weight(1f)
                             .minimumInteractiveComponentSize()
                             .testTag("refresh_live_subscription_button"),
                     ) {
@@ -825,12 +859,14 @@ internal fun LiveSubscriptionCard(
                                 modifier = Modifier.size(14.dp),
                             )
                         }
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(6.dp))
                         Text(
-                            text = if (isRefreshingSubscription) "Syncing" else "Refresh",
+                            text = if (isRefreshingSubscription) "Syncing..." else "Refresh Live",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.Bold,
                             color = marketColors.bullish,
+                            maxLines = 1,
+                            softWrap = false,
                         )
                     }
 
@@ -838,7 +874,7 @@ internal fun LiveSubscriptionCard(
                         onClick = { showProgressBars = !showProgressBars },
                         shape = RoundedCornerShape(10.dp),
                         border = BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.55f)),
-                        contentPadding = PaddingValues(horizontal = 9.dp, vertical = 6.dp),
+                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                         modifier = Modifier
                             .minimumInteractiveComponentSize()
                             .testTag("toggle_subscription_bars_button"),
@@ -848,32 +884,50 @@ internal fun LiveSubscriptionCard(
                             contentDescription = null,
                             modifier = Modifier.size(14.dp),
                         )
-                        Spacer(modifier = Modifier.width(4.dp))
+                        Spacer(modifier = Modifier.width(5.dp))
                         Text(
-                            text = if (showProgressBars) "Hide" else "Bars",
+                            text = if (showProgressBars) "Hide Bars" else "Show Bars",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
+                            maxLines = 1,
+                            softWrap = false,
                         )
                     }
                 }
             }
 
-            if (!subscriptionStatusMessage.isNullOrBlank()) {
+            if (!subscriptionStatusMessage.isNullOrBlank() || !subscriptionSourceStatuses.isNullOrBlank()) {
                 Spacer(modifier = Modifier.height(8.dp))
                 Surface(
                     shape = RoundedCornerShape(8.dp),
-                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (glass.isAmoled) 0.85f else 0.55f),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = if (glass.isDark) 0.72f else 0.55f),
                     border = BorderStroke(0.7.dp, marketColors.border),
                     modifier = Modifier
                         .fillMaxWidth()
                         .testTag("live_subscription_sync_status"),
                 ) {
-                    Text(
-                        text = subscriptionStatusMessage,
-                        style = MaterialTheme.typography.labelSmall,
-                        color = MaterialTheme.colorScheme.onSurface,
+                    Column(
                         modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                    )
+                        verticalArrangement = Arrangement.spacedBy(2.dp),
+                    ) {
+                        if (!subscriptionStatusMessage.isNullOrBlank()) {
+                            Text(
+                                text = subscriptionStatusMessage,
+                                style = MaterialTheme.typography.labelSmall,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                        }
+                        if (!subscriptionSourceStatuses.isNullOrBlank()) {
+                            Text(
+                                text = subscriptionSourceStatuses,
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                color = marketColors.mutedText,
+                                maxLines = 2,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.testTag("live_subscription_sources_status"),
+                            )
+                        }
+                    }
                 }
             }
 
@@ -881,14 +935,22 @@ internal fun LiveSubscriptionCard(
             HorizontalDivider(color = marketColors.border.copy(alpha = 0.7f))
 
             SubscriptionKeyValueRow(
-                label = "Date:",
-                value = if (!subscriptionSyncLabel.isNullOrBlank() && ipo.updatedAgoLabel.isBlank()) {
-                    subscriptionSyncLabel
-                } else {
-                    ipo.updatedAgoLabel
+                label = "Source:",
+                value = ipo.subscriptionSourceLabel.ifBlank {
+                    subscriptionSyncLabel?.takeIf { it.isNotBlank() } ?: ipo.updatedAgoLabel
                 },
+                valueModifier = Modifier.testTag("live_subscription_source_value"),
             )
             HorizontalDivider(color = marketColors.border.copy(alpha = 0.45f), thickness = 0.6.dp)
+
+            if (ipo.subscriptionUpdatedAtMs > 0L) {
+                SubscriptionKeyValueRow(
+                    label = "Updated:",
+                    value = LiveSubscriptionRepository.formatTimeLabel(ipo.subscriptionUpdatedAtMs),
+                    valueModifier = Modifier.testTag("live_subscription_updated_at_value"),
+                )
+                HorizontalDivider(color = marketColors.border.copy(alpha = 0.45f), thickness = 0.6.dp)
+            }
 
             SubscriptionKeyValueRow(
                 label = "QIB:",
@@ -1051,6 +1113,7 @@ private fun SubscriptionKeyValueRow(
     value: String,
     emphasize: Boolean = false,
     valueColor: Color = MaterialTheme.colorScheme.onSurface,
+    valueModifier: Modifier = Modifier,
 ) {
     val marketColors = LocalMarketColors.current
     Row(
@@ -1073,7 +1136,7 @@ private fun SubscriptionKeyValueRow(
                 fontWeight = if (emphasize) FontWeight.Bold else FontWeight.SemiBold,
             ),
             color = valueColor,
-            modifier = Modifier.weight(0.64f),
+            modifier = valueModifier.weight(0.64f),
         )
     }
 }
@@ -1170,10 +1233,10 @@ internal fun ExpectedPremiumCard(
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "Est. Listing:",
+                    text = "Expected Listing Price:",
                     style = MaterialTheme.typography.bodyMedium,
                     color = marketColors.mutedText,
-                    modifier = Modifier.weight(0.38f),
+                    modifier = Modifier.weight(0.42f),
                 )
                 Text(
                     text = "${formatRupees(ipo.estimatedListingPrice)} (${ipo.gmpSourceLabel})",
@@ -1182,7 +1245,7 @@ internal fun ExpectedPremiumCard(
                         fontWeight = FontWeight.SemiBold,
                     ),
                     color = MaterialTheme.colorScheme.onSurface,
-                    modifier = Modifier.weight(0.62f),
+                    modifier = Modifier.weight(0.58f),
                 )
             }
 

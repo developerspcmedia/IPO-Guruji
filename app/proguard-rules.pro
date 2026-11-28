@@ -1,21 +1,51 @@
-# Add project specific ProGuard rules here.
-# You can control the set of applied configuration files using the
-# proguardFiles setting in build.gradle.
-#
-# For more details, see
-#   http://developer.android.com/guide/developing/tools/proguard.html
+# R8 / ProGuard optimization rules for IPO Guruji
+# Keeps obfuscation percentage high while protecting runtime serialization,
+# Navigation Compose type-safe routes, and persisted Room/DataStore enums.
 
-# If your project uses WebView with JS, uncomment the following
-# and specify the fully qualified class name to the JavaScript interface
-# class:
-#-keepclassmembers class fqcn.of.javascript.interface.for.webview {
-#   public *;
-#}
+# Preserve readable line numbers for Play Console crash deobfuscation
+# while hiding original source file names.
+-keepattributes SourceFile,LineNumberTable
+-renamesourcefileattribute SourceFile
 
-# Uncomment this to preserve the line number information for
-# debugging stack traces.
-#-keepattributes SourceFile,LineNumberTable
+# Keep kotlinx.serialization serializers & descriptors (required under R8 full mode
+# for Room JSON TypeConverters, DataStore JSON, and Navigation Compose @Serializable routes)
+-keepattributes *Annotation*, InnerClasses
+-dontnote kotlinx.serialization.AnnotationsKt
 
-# If you keep the line number information, uncomment this to
-# hide the original source file name.
-#-renamesourcefileattribute SourceFile
+-keepclassmembers class kotlinx.serialization.json.** {
+    *** Companion;
+}
+-keepclasseswithmembers class kotlinx.serialization.json.** {
+    kotlinx.serialization.KSerializer serializer(...);
+}
+
+# Keep @Serializable model & route classes' Companion/serializer methods and fields
+-keep,includedescriptorclasses class com.example.data.model.**$$serializer { *; }
+-keepclassmembers class com.example.data.model.** {
+    *** Companion;
+}
+-keepclasseswithmembers class com.example.data.model.** {
+    kotlinx.serialization.KSerializer serializer(...);
+}
+
+-keep,includedescriptorclasses class com.example.data.preferences.GmpWatchRule$$serializer { *; }
+-keepclassmembers class com.example.data.preferences.GmpWatchRule {
+    *** Companion;
+}
+-keepclasseswithmembers class com.example.data.preferences.GmpWatchRule {
+    kotlinx.serialization.KSerializer serializer(...);
+}
+
+# Navigation Compose type-safe @Serializable routes require their route class & serializer kept
+-keep,includedescriptorclasses @kotlinx.serialization.Serializable class com.example.ui.navigation.** { *; }
+-keep,includedescriptorclasses class com.example.ui.navigation.**$$serializer { *; }
+
+# Keep persisted enum names stored via .name / valueOf() in Room and DataStore
+-keepclassmembers enum com.example.data.model.** {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}
+-keepclassmembers enum com.example.data.preferences.ThemePreference {
+    public static **[] values();
+    public static ** valueOf(java.lang.String);
+}

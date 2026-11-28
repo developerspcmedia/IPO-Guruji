@@ -1,0 +1,34 @@
+name: Keep Scheduled Workflows Alive
+
+on:
+  schedule:
+    # 1st of every month at 00:00 UTC so GitHub does not disable cron workflows after 60 days of inactivity
+    - cron: "0 0 1 * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: ipo-data-sync-keepalive
+  cancel-in-progress: false
+
+jobs:
+  keepalive:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Update heartbeat file
+        run: |
+          date -u +"%Y-%m-%dT%H:%M:%SZ" > ipo-data-sync/heartbeat.txt
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add ipo-data-sync/heartbeat.txt
+          if ! git diff --cached --quiet; then
+            git commit -m "chore: monthly keepalive heartbeat [skip ci]"
+            git push
+          fi

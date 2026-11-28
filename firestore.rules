@@ -1,0 +1,310 @@
+rules_version = '2';
+
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    // Global default-deny safety net
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    // --- GLOBAL HARDENED PRIMITIVES ---
+    function isValidId(id) {
+      return id is string && id.size() >= 1 && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isAdmin() {
+      return isSignedIn() &&
+        request.auth.token.email_verified == true &&
+        request.auth.token.email == 'developers.pcmedia@gmail.com';
+    }
+
+    function isValidMeta(m) {
+      return m is map &&
+        m.keys().hasOnly(['shortCode', 'sector', 'boardType', 'exchange', 'status', 'overview', 'adminNote']) &&
+        (!('shortCode' in m) || (m.shortCode is string && m.shortCode.size() <= 24)) &&
+        (!('sector' in m) || (m.sector is string && m.sector.size() <= 80)) &&
+        (!('boardType' in m) || m.boardType in ['MAINBOARD', 'SME']) &&
+        (!('exchange' in m) || (m.exchange is string && m.exchange.size() <= 40)) &&
+        (!('status' in m) || m.status in ['LIVE', 'PRE_APPLY', 'UPCOMING', 'CLOSED']) &&
+        (!('overview' in m) || (m.overview is string && m.overview.size() <= 2000)) &&
+        (!('adminNote' in m) || (m.adminNote is string && m.adminNote.size() <= 400));
+    }
+
+    function isValidSchedule(s) {
+      return s is map &&
+        s.keys().hasOnly(['openDate', 'closeDate', 'allotmentDate', 'listingDate']) &&
+        (!('openDate' in s) || (s.openDate is string && s.openDate.size() <= 40)) &&
+        (!('closeDate' in s) || (s.closeDate is string && s.closeDate.size() <= 40)) &&
+        (!('allotmentDate' in s) || (s.allotmentDate is string && s.allotmentDate.size() <= 40)) &&
+        (!('listingDate' in s) || (s.listingDate is string && s.listingDate.size() <= 40));
+    }
+
+    function isValidPricing(p) {
+      return p is map &&
+        p.keys().hasOnly(['priceLow', 'priceHigh', 'faceValue', 'lotSize', 'issueSizeCr', 'freshIssueCr', 'ofsCr', 'gmpRupees', 'kostakRupees']) &&
+        (!('priceLow' in p) || (p.priceLow is number && p.priceLow >= 0 && p.priceLow <= 1000000)) &&
+        (!('priceHigh' in p) || (p.priceHigh is number && p.priceHigh >= 0 && p.priceHigh <= 1000000)) &&
+        (!('priceLow' in p) || !('priceHigh' in p) || p.priceHigh == 0 || p.priceHigh >= p.priceLow) &&
+        (!('faceValue' in p) || (p.faceValue is number && p.faceValue >= 0 && p.faceValue <= 100000)) &&
+        (!('lotSize' in p) || (p.lotSize is number && p.lotSize >= 0 && p.lotSize <= 1000000)) &&
+        (!('issueSizeCr' in p) || (p.issueSizeCr is number && p.issueSizeCr >= 0 && p.issueSizeCr <= 10000000)) &&
+        (!('freshIssueCr' in p) || (p.freshIssueCr is number && p.freshIssueCr >= 0 && p.freshIssueCr <= 10000000)) &&
+        (!('ofsCr' in p) || (p.ofsCr is number && p.ofsCr >= 0 && p.ofsCr <= 10000000)) &&
+        (!('gmpRupees' in p) || (p.gmpRupees is number && p.gmpRupees >= -100000 && p.gmpRupees <= 1000000)) &&
+        (!('kostakRupees' in p) || (p.kostakRupees is number && p.kostakRupees >= -100000 && p.kostakRupees <= 1000000));
+    }
+
+    function isValidSubscription(sub) {
+      return sub is map &&
+        sub.keys().hasOnly(['qibSubX', 'bNiiSubX', 'sNiiSubX', 'retailSubX', 'employeeSubX', 'totalSubX']) &&
+        (!('qibSubX' in sub) || (sub.qibSubX is number && sub.qibSubX >= 0 && sub.qibSubX <= 100000)) &&
+        (!('bNiiSubX' in sub) || (sub.bNiiSubX is number && sub.bNiiSubX >= 0 && sub.bNiiSubX <= 100000)) &&
+        (!('sNiiSubX' in sub) || (sub.sNiiSubX is number && sub.sNiiSubX >= 0 && sub.sNiiSubX <= 100000)) &&
+        (!('retailSubX' in sub) || (sub.retailSubX is number && sub.retailSubX >= 0 && sub.retailSubX <= 100000)) &&
+        (!('employeeSubX' in sub) || (sub.employeeSubX is number && sub.employeeSubX >= 0 && sub.employeeSubX <= 100000)) &&
+        (!('totalSubX' in sub) || (sub.totalSubX is number && sub.totalSubX >= 0 && sub.totalSubX <= 100000));
+    }
+
+    function isValidRegistrar(r) {
+      return r is map &&
+        r.keys().hasOnly(['registrarName', 'registrarUrl']) &&
+        (!('registrarName' in r) || (r.registrarName is string && r.registrarName.size() <= 120)) &&
+        (!('registrarUrl' in r) ||
+          (r.registrarUrl is string && r.registrarUrl.size() <= 300 &&
+            (r.registrarUrl.size() == 0 || r.registrarUrl.matches('^https?://.*'))));
+    }
+
+    // --- VALIDATION BLUEPRINTS ---
+    function isValidIpoOverride(data) {
+      return isValidId(data.targetIpoId) &&
+        data.normalizedKey is string && data.normalizedKey.size() >= 1 && data.normalizedKey.size() <= 128 &&
+        data.companyName is string && data.companyName.size() >= 2 && data.companyName.size() <= 120 &&
+        data.published is bool &&
+        data.customIpo is bool &&
+        data.hidden is bool &&
+        (!('meta' in data) || isValidMeta(data.meta)) &&
+        (!('schedule' in data) || isValidSchedule(data.schedule)) &&
+        (!('pricing' in data) || isValidPricing(data.pricing)) &&
+        (!('subscription' in data) || isValidSubscription(data.subscription)) &&
+        (!('registrar' in data) || isValidRegistrar(data.registrar));
+    }
+
+    function isValidAdminProfile(data) {
+      return isValidId(data.userId) &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 100 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+        (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500)) &&
+        data.role == 'admin';
+    }
+
+    function isValidUserPreferences(p) {
+      return p is map &&
+        p.keys().hasOnly([
+          'themePreference',
+          'compactCards',
+          'notifyNewIpo',
+          'notifyOpenIpo',
+          'notifyAllotment',
+          'notifyNewsAlerts'
+        ]) &&
+        (!('themePreference' in p) || p.themePreference in ['SYSTEM', 'LIGHT', 'DARK', 'IOS_GLASS']) &&
+        (!('compactCards' in p) || p.compactCards is bool) &&
+        (!('notifyNewIpo' in p) || p.notifyNewIpo is bool) &&
+        (!('notifyOpenIpo' in p) || p.notifyOpenIpo is bool) &&
+        (!('notifyAllotment' in p) || p.notifyAllotment is bool) &&
+        (!('notifyNewsAlerts' in p) || p.notifyNewsAlerts is bool);
+    }
+
+    function isValidUserProfile(data) {
+      return isValidId(data.userId) &&
+        data.displayName is string && data.displayName.size() >= 1 && data.displayName.size() <= 80 &&
+        data.email is string && data.email.size() >= 3 && data.email.size() <= 120 &&
+        (!('photoUrl' in data) || (data.photoUrl is string && data.photoUrl.size() <= 500)) &&
+        data.investorCategory in ['RETAIL', 'S_HNI', 'B_HNI', 'SHAREHOLDER'] &&
+        (!('bio' in data) || (data.bio is string && data.bio.size() <= 240)) &&
+        data.bookmarkedIpoIds is list && data.bookmarkedIpoIds.size() <= 200 &&
+        (!('preferences' in data) || isValidUserPreferences(data.preferences));
+    }
+
+    function isValidAdminNote(data) {
+      return isValidId(data.targetIpoId) &&
+        data.adminNote is string &&
+        data.adminNote.size() >= 0 &&
+        data.adminNote.size() <= 400 &&
+        data.updatedAt is timestamp &&
+        data.updatedAt <= request.time;
+    }
+
+    // --- COLLECTION 1: /ipo_overrides/{overrideId} ---
+    match /ipo_overrides/{overrideId} {
+      // Public market data overrides (zero PII) readable when published == true; admin can read all
+      allow get: if isValidId(overrideId) && (resource.data.published == true || isAdmin());
+      allow list: if resource.data.published == true || isAdmin();
+
+      // Strictly restricted to verified owner admin account with full schema & key allowlist validation
+      allow create: if isAdmin() &&
+        isValidId(overrideId) &&
+        request.resource.data.keys().hasOnly([
+          'targetIpoId',
+          'normalizedKey',
+          'companyName',
+          'published',
+          'customIpo',
+          'hidden',
+          'meta',
+          'schedule',
+          'pricing',
+          'subscription',
+          'registrar',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        request.resource.data.createdAt is timestamp && request.resource.data.createdAt <= request.time &&
+        request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time &&
+        isValidIpoOverride(request.resource.data);
+
+      allow update: if isValidIpoOverride(request.resource.data) &&
+        isAdmin() &&
+        isValidId(overrideId) &&
+        request.resource.data.targetIpoId == resource.data.targetIpoId &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'normalizedKey',
+          'companyName',
+          'published',
+          'customIpo',
+          'hidden',
+          'meta',
+          'schedule',
+          'pricing',
+          'subscription',
+          'registrar',
+          'updatedAt'
+        ]);
+
+      allow delete: if isAdmin() && isValidId(overrideId);
+    }
+
+    // --- COLLECTION 2: /admin_profiles/{userId} ---
+    match /admin_profiles/{userId} {
+      allow get: if isAdmin() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+
+      allow create: if isAdmin() &&
+        isValidId(userId) &&
+        request.auth.uid == userId &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.email == request.auth.token.email &&
+        request.resource.data.keys().hasOnly([
+          'userId',
+          'displayName',
+          'email',
+          'photoUrl',
+          'role',
+          'createdAt',
+          'lastActiveAt'
+        ]) &&
+        request.resource.data.createdAt is timestamp && request.resource.data.createdAt <= request.time &&
+        request.resource.data.lastActiveAt is timestamp && request.resource.data.lastActiveAt <= request.time &&
+        isValidAdminProfile(request.resource.data);
+
+      allow update: if isValidAdminProfile(request.resource.data) &&
+        isAdmin() &&
+        isValidId(userId) &&
+        request.auth.uid == userId &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.email == resource.data.email &&
+        request.resource.data.role == resource.data.role &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.lastActiveAt is timestamp && request.resource.data.lastActiveAt <= request.time &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName',
+          'photoUrl',
+          'lastActiveAt'
+        ]);
+
+      allow delete: if false;
+    }
+
+    // --- COLLECTION 3: /user_profiles/{userId} ---
+    match /user_profiles/{userId} {
+      // Strict per-user isolation: users can only read/manage their own profile; never list all users
+      allow get: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+      allow list: if false;
+
+      allow create: if isSignedIn() &&
+        isValidId(userId) &&
+        request.auth.uid == userId &&
+        request.resource.data.userId == request.auth.uid &&
+        request.resource.data.email == request.auth.token.email &&
+        request.resource.data.keys().hasOnly([
+          'userId',
+          'displayName',
+          'email',
+          'photoUrl',
+          'investorCategory',
+          'bio',
+          'bookmarkedIpoIds',
+          'preferences',
+          'createdAt',
+          'updatedAt'
+        ]) &&
+        request.resource.data.createdAt is timestamp && request.resource.data.createdAt <= request.time &&
+        request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time &&
+        isValidUserProfile(request.resource.data);
+
+      allow update: if isValidUserProfile(request.resource.data) &&
+        isSignedIn() &&
+        isValidId(userId) &&
+        request.auth.uid == userId &&
+        request.resource.data.userId == resource.data.userId &&
+        request.resource.data.email == resource.data.email &&
+        request.resource.data.createdAt == resource.data.createdAt &&
+        request.resource.data.updatedAt is timestamp && request.resource.data.updatedAt <= request.time &&
+        request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+          'displayName',
+          'photoUrl',
+          'investorCategory',
+          'bio',
+          'bookmarkedIpoIds',
+          'preferences',
+          'updatedAt'
+        ]);
+
+      allow delete: if isSignedIn() && isValidId(userId) && request.auth.uid == userId;
+    }
+
+    // --- COLLECTION 4: /ipo_admin_notes/{noteId} ---
+    match /ipo_admin_notes/{noteId} {
+      allow get: if isAdmin() && isValidId(noteId);
+      allow list: if isAdmin();
+
+      allow create: if isAdmin() &&
+        isValidId(noteId) &&
+        request.resource.data.keys().hasOnly([
+          'targetIpoId',
+          'adminNote',
+          'updatedAt'
+        ]) &&
+        isValidAdminNote(request.resource.data);
+
+      allow update: if isAdmin() &&
+        isValidId(noteId) &&
+        request.resource.data.keys().hasOnly([
+          'targetIpoId',
+          'adminNote',
+          'updatedAt'
+        ]) &&
+        request.resource.data.targetIpoId == resource.data.targetIpoId &&
+        isValidAdminNote(request.resource.data);
+
+      allow delete: if isAdmin() && isValidId(noteId);
+    }
+  }
+}

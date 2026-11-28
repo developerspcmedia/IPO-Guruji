@@ -1,0 +1,226 @@
+{
+  "entities": {
+    "IpoOverride": {
+      "title": "IpoOverride",
+      "description": "Admin-managed manual correction, custom IPO addition, or hidden suppression overlay applied on top of automatic live IPO feeds.",
+      "type": "object",
+      "properties": {
+        "targetIpoId": {
+          "type": "string",
+          "description": "Stable identifier of the IPO being overridden or created."
+        },
+        "normalizedKey": {
+          "type": "string",
+          "description": "Normalized company matching key used to merge with live scraped feeds."
+        },
+        "companyName": {
+          "type": "string",
+          "description": "Display company name of the IPO."
+        },
+        "published": {
+          "type": "boolean",
+          "description": "True when active and readable by all app clients."
+        },
+        "customIpo": {
+          "type": "boolean",
+          "description": "True when this IPO was manually created from scratch by the admin."
+        },
+        "hidden": {
+          "type": "boolean",
+          "description": "True to suppress this IPO from the public app catalog."
+        },
+        "meta": {
+          "type": "object",
+          "description": "Nested map containing shortCode, sector, boardType, exchange, status, and overview."
+        },
+        "schedule": {
+          "type": "object",
+          "description": "Nested map containing openDate, closeDate, allotmentDate, and listingDate."
+        },
+        "pricing": {
+          "type": "object",
+          "description": "Nested map containing priceLow, priceHigh, faceValue, lotSize, issueSizeCr, freshIssueCr, ofsCr, gmpRupees, and kostakRupees."
+        },
+        "subscription": {
+          "type": "object",
+          "description": "Nested map containing qibSubX, bNiiSubX, sNiiSubX, retailSubX, employeeSubX, and totalSubX."
+        },
+        "registrar": {
+          "type": "object",
+          "description": "Nested map containing registrarName and registrarUrl."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when override was created (submitted via FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when override was last modified (submitted via FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "targetIpoId",
+        "normalizedKey",
+        "companyName",
+        "published",
+        "customIpo",
+        "hidden",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "AdminProfile": {
+      "title": "AdminProfile",
+      "description": "Private profile document for the authorized Admin Dashboard operator.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the authorized admin."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "Display name from Google Sign-In."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Verified Google email address."
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "Optional Google profile photo URL."
+        },
+        "role": {
+          "type": "string",
+          "enum": ["admin"],
+          "description": "Immutable admin role marker."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when admin profile was created (submitted via FieldValue.serverTimestamp())."
+        },
+        "lastActiveAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp of the latest admin dashboard activity (submitted via FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "email",
+        "role",
+        "createdAt",
+        "lastActiveAt"
+      ]
+    },
+    "UserProfile": {
+      "title": "UserProfile",
+      "description": "Private per-user investor profile storing customizable investor details, synced IPO watchlist IDs, and theme/alert preferences. Strictly isolated to the signed-in user UID.",
+      "type": "object",
+      "properties": {
+        "userId": {
+          "type": "string",
+          "description": "Firebase Auth UID of the user (immutable)."
+        },
+        "displayName": {
+          "type": "string",
+          "description": "User-editable investor display name (1 to 80 characters)."
+        },
+        "email": {
+          "type": "string",
+          "format": "email",
+          "description": "Google account email address (immutable)."
+        },
+        "photoUrl": {
+          "type": "string",
+          "description": "Optional Google profile photo URL."
+        },
+        "investorCategory": {
+          "type": "string",
+          "enum": ["RETAIL", "S_HNI", "B_HNI", "SHAREHOLDER"],
+          "description": "Preferred IPO investor bidding category."
+        },
+        "bio": {
+          "type": "string",
+          "description": "Optional short investor note or bio (max 240 characters)."
+        },
+        "bookmarkedIpoIds": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "List of bookmarked IPO identifiers synced across devices (max 200 items)."
+        },
+        "preferences": {
+          "type": "object",
+          "description": "Nested map containing themePreference, compactCards, notifyNewIpo, notifyOpenIpo, notifyAllotment, and notifyNewsAlerts."
+        },
+        "createdAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when user profile was created (submitted via FieldValue.serverTimestamp())."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when user profile was last updated (submitted via FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "userId",
+        "displayName",
+        "email",
+        "investorCategory",
+        "bookmarkedIpoIds",
+        "createdAt",
+        "updatedAt"
+      ]
+    },
+    "IpoAdminNote": {
+      "title": "IpoAdminNote",
+      "description": "Private admin-only internal audit note associated with an IPO override. Strictly inaccessible to non-admin clients.",
+      "type": "object",
+      "properties": {
+        "targetIpoId": {
+          "type": "string",
+          "description": "Identifier of the associated IPO override."
+        },
+        "adminNote": {
+          "type": "string",
+          "description": "Private internal admin note (max 400 characters)."
+        },
+        "updatedAt": {
+          "type": "string",
+          "format": "date-time",
+          "description": "Server timestamp when the admin note was last updated (submitted via FieldValue.serverTimestamp())."
+        }
+      },
+      "required": [
+        "targetIpoId",
+        "adminNote",
+        "updatedAt"
+      ]
+    }
+  },
+  "firestore": {
+    "/ipo_overrides/{overrideId}": {
+      "schema": { "$ref": "#/entities/IpoOverride" },
+      "description": "Published manual IPO overrides, custom IPO entries, and hidden IPO suppressions managed by the authorized admin."
+    },
+    "/ipo_admin_notes/{overrideId}": {
+      "schema": { "$ref": "#/entities/IpoAdminNote" },
+      "description": "Private admin-only internal notes linked by overrideId; readable and writable only by the authorized admin."
+    },
+    "/admin_profiles/{userId}": {
+      "schema": { "$ref": "#/entities/AdminProfile" },
+      "description": "Private admin operator profile isolated strictly to the authorized admin UID."
+    },
+    "/user_profiles/{userId}": {
+      "schema": { "$ref": "#/entities/UserProfile" },
+      "description": "Private investor profile isolated strictly to the authenticated user's own UID."
+    }
+  }
+}

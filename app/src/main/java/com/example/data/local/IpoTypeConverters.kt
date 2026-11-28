@@ -7,6 +7,8 @@ import com.example.data.model.DaySubscription
 import com.example.data.model.FinancialYearReport
 import com.example.data.model.GmpPoint
 import com.example.data.model.IpoStatus
+import com.example.data.model.LiveApplicationCount
+import com.example.data.model.UsIpoStatus
 import com.example.data.model.ValuationMetrics
 import kotlinx.serialization.encodeToString
 import kotlinx.serialization.json.Json
@@ -52,7 +54,15 @@ class IpoTypeConverters {
     fun fromDailySubscriptions(list: List<DaySubscription>): String = json.encodeToString(list)
 
     @TypeConverter
-    fun toDailySubscriptions(raw: String): List<DaySubscription> = json.decodeFromString(raw)
+    fun toDailySubscriptions(raw: String): List<DaySubscription> =
+        runCatching { json.decodeFromString<List<DaySubscription>>(raw) }.getOrDefault(emptyList())
+
+    @TypeConverter
+    fun fromLiveApplicationCounts(list: List<LiveApplicationCount>): String = json.encodeToString(list)
+
+    @TypeConverter
+    fun toLiveApplicationCounts(raw: String): List<LiveApplicationCount> =
+        runCatching { json.decodeFromString<List<LiveApplicationCount>>(raw) }.getOrDefault(emptyList())
 
     @TypeConverter
     fun fromValuation(valuation: ValuationMetrics): String = json.encodeToString(valuation)
@@ -66,4 +76,11 @@ class IpoTypeConverters {
     @TypeConverter
     fun toAllotmentWatchStatus(value: String): AllotmentWatchStatus =
         runCatching { AllotmentWatchStatus.valueOf(value) }.getOrDefault(AllotmentWatchStatus.PENDING)
+
+    @TypeConverter
+    fun fromUsIpoStatus(value: UsIpoStatus): String = value.name
+
+    @TypeConverter
+    fun toUsIpoStatus(value: String): UsIpoStatus =
+        runCatching { UsIpoStatus.valueOf(value) }.getOrDefault(UsIpoStatus.UPCOMING)
 }

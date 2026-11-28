@@ -16,3 +16,13 @@
 local.properties
 .env
 debug.keystore
+*-debug.log
+ipo-data-sync/node_modules/
+ipo-data-sync/dist/
+ipo-data-sync/.env
+ipo-data-sync/.env.*
+!ipo-data-sync/.env.example
+*service-account*.json
+*serviceAccount*.json
+firebase-adminsdk-*.json
+

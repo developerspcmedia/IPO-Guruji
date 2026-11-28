@@ -25,13 +25,13 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.Article
 import androidx.compose.material.icons.automirrored.outlined.Chat
 import androidx.compose.material.icons.automirrored.outlined.ExitToApp
 import androidx.compose.material.icons.automirrored.outlined.FormatListBulleted
 import androidx.compose.material.icons.automirrored.outlined.HelpOutline
 import androidx.compose.material.icons.automirrored.outlined.ShowChart
 import androidx.compose.material.icons.automirrored.outlined.TrendingUp
-import androidx.compose.material.icons.outlined.Article
 import androidx.compose.material.icons.outlined.Balance
 import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.CalendarMonth
@@ -40,15 +40,26 @@ import androidx.compose.material.icons.outlined.Description
 import androidx.compose.material.icons.outlined.Home
 import androidx.compose.material.icons.outlined.Newspaper
 import androidx.compose.material.icons.outlined.NotificationsActive
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.outlined.RocketLaunch
 import androidx.compose.material.icons.outlined.Settings
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.VerifiedUser
+import androidx.compose.material.icons.automirrored.rounded.Logout
+import androidx.compose.material.icons.rounded.AdminPanelSettings
 import androidx.compose.material.icons.rounded.AutoAwesome
+import androidx.compose.material.icons.rounded.CheckCircle
+import androidx.compose.material.icons.rounded.ChevronRight
+import androidx.compose.material.icons.rounded.Lock
+import androidx.compose.material3.Button
+import androidx.compose.material3.ButtonDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.ModalDrawerSheet
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
@@ -67,14 +78,20 @@ import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.material.icons.rounded.Person
 import com.example.R
+import com.example.data.firebase.AdminAuthSession
+import com.example.data.model.InvestorCategory
 import com.example.ui.theme.LocalGlassStyle
 import com.example.ui.theme.LocalMarketColors
 
 enum class DrawerMenuItemId {
+    USER_PROFILE,
+    ADMIN_DASHBOARD,
     HOME,
     MAINBOARD,
     SME,
+    USA_IPOS,
     LISTED,
     IPO_CALENDAR,
     ALLOTMENT_ALERTS,
@@ -101,6 +118,16 @@ fun AppNavigationDrawerSheet(
     drawerWidth: Dp,
     onSelectItem: (DrawerMenuItemId) -> Unit,
     onQuickSyncGmp: () -> Unit,
+    adminSession: AdminAuthSession = AdminAuthSession(),
+    userDisplayName: String = "",
+    investorCategory: InvestorCategory = InvestorCategory.RETAIL,
+    bookmarkedCount: Int = 0,
+    activeOverrideCount: Int = 0,
+    isAdminSigningIn: Boolean = false,
+    onOpenUserProfile: () -> Unit = { onSelectItem(DrawerMenuItemId.USER_PROFILE) },
+    onOpenAdminDashboard: () -> Unit = { onSelectItem(DrawerMenuItemId.ADMIN_DASHBOARD) },
+    onAdminGoogleSignIn: () -> Unit = {},
+    onAdminSignOut: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val marketColors = LocalMarketColors.current
@@ -132,7 +159,23 @@ fun AppNavigationDrawerSheet(
                 onQuickSyncGmp = onQuickSyncGmp,
             )
 
-            Spacer(modifier = Modifier.height(8.dp))
+            // Unified Investor Profile Card (Admin Dashboard button is strictly invisible to guests & normal users)
+            DrawerUserProfileCard(
+                authSession = adminSession,
+                resolvedDisplayName = userDisplayName,
+                investorCategory = investorCategory,
+                bookmarkedCount = bookmarkedCount,
+                activeOverrideCount = activeOverrideCount,
+                isSigningIn = isAdminSigningIn,
+                isProfileSelected = activeItem == DrawerMenuItemId.USER_PROFILE,
+                isAdminSelected = activeItem == DrawerMenuItemId.ADMIN_DASHBOARD,
+                onOpenUserProfile = onOpenUserProfile,
+                onOpenAdminDashboard = onOpenAdminDashboard,
+                onGoogleSignIn = onAdminGoogleSignIn,
+                onSignOut = onAdminSignOut,
+            )
+
+            Spacer(modifier = Modifier.height(6.dp))
 
             // Primary Menu Items
             DrawerMenuRow(
@@ -155,6 +198,15 @@ fun AppNavigationDrawerSheet(
                 selected = activeItem == DrawerMenuItemId.SME,
                 testTag = "drawer_item_sme",
                 onClick = { onSelectItem(DrawerMenuItemId.SME) },
+            )
+            DrawerMenuRow(
+                icon = Icons.Outlined.Public,
+                label = "USA IPOs",
+                selected = activeItem == DrawerMenuItemId.USA_IPOS,
+                badgeText = "NEW",
+                badgeColor = badgeOrange,
+                testTag = "drawer_item_usa_ipos",
+                onClick = { onSelectItem(DrawerMenuItemId.USA_IPOS) },
             )
             DrawerMenuRow(
                 icon = Icons.Outlined.CheckCircle,
@@ -267,7 +319,7 @@ fun AppNavigationDrawerSheet(
                 onClick = { onSelectItem(DrawerMenuItemId.PRIVACY_POLICY) },
             )
             DrawerMenuRow(
-                icon = Icons.Outlined.Article,
+                icon = Icons.AutoMirrored.Outlined.Article,
                 label = "Terms and Conditions",
                 selected = activeItem == DrawerMenuItemId.TERMS_CONDITIONS,
                 testTag = "drawer_item_terms_conditions",
@@ -366,7 +418,7 @@ private fun DrawerBrandHeader(
             Spacer(modifier = Modifier.height(6.dp))
 
             val ctaBg = MaterialTheme.colorScheme.onSurface
-            val ctaFg = if (LocalGlassStyle.current.isDark) Color(0xFF000000) else Color.White
+            val ctaFg = if (LocalGlassStyle.current.isDark) MaterialTheme.colorScheme.background else Color.White
 
             // High-Contrast Pill Action mirroring reference header CTA pill
             Surface(
@@ -397,6 +449,289 @@ private fun DrawerBrandHeader(
                         tint = marketColors.ctaGold,
                         modifier = Modifier.size(15.dp),
                     )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun DrawerUserProfileCard(
+    authSession: AdminAuthSession,
+    resolvedDisplayName: String,
+    investorCategory: InvestorCategory,
+    bookmarkedCount: Int,
+    activeOverrideCount: Int,
+    isSigningIn: Boolean,
+    isProfileSelected: Boolean,
+    isAdminSelected: Boolean,
+    onOpenUserProfile: () -> Unit,
+    onOpenAdminDashboard: () -> Unit,
+    onGoogleSignIn: () -> Unit,
+    onSignOut: () -> Unit,
+) {
+    val marketColors = LocalMarketColors.current
+    val isSelected = isProfileSelected || (authSession.isAuthorizedAdmin && isAdminSelected)
+    val borderColor = when {
+        isSelected -> MaterialTheme.colorScheme.primary
+        authSession.isAuthorizedAdmin -> marketColors.bullish.copy(alpha = 0.5f)
+        else -> marketColors.border.copy(alpha = 0.75f)
+    }
+    val effectiveName = resolvedDisplayName.ifBlank { authSession.displayName }.ifBlank { "Investor" }
+
+    Surface(
+        shape = RoundedCornerShape(16.dp),
+        color = MaterialTheme.colorScheme.surface,
+        border = BorderStroke(if (isSelected) 1.2.dp else 0.8.dp, borderColor),
+        modifier = Modifier
+            .fillMaxWidth()
+            .padding(horizontal = 14.dp, vertical = 4.dp)
+            .testTag("drawer_user_profile_card"),
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(12.dp),
+            verticalArrangement = Arrangement.spacedBy(10.dp),
+        ) {
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(38.dp)
+                        .clip(CircleShape)
+                        .background(
+                            if (authSession.isAuthorizedAdmin) {
+                                marketColors.bullishContainer
+                            } else {
+                                MaterialTheme.colorScheme.primaryContainer
+                            },
+                        ),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = if (authSession.isAuthorizedAdmin) {
+                            Icons.Rounded.AdminPanelSettings
+                        } else {
+                            Icons.Rounded.Person
+                        },
+                        contentDescription = "Investor Profile",
+                        tint = if (authSession.isAuthorizedAdmin) {
+                            marketColors.bullish
+                        } else {
+                            MaterialTheme.colorScheme.primary
+                        },
+                        modifier = Modifier.size(20.dp),
+                    )
+                }
+
+                Column(modifier = Modifier.weight(1f)) {
+                    Row(
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(6.dp),
+                    ) {
+                        Text(
+                            text = if (authSession.isSignedIn) effectiveName else "Investor Profile",
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.Bold,
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.weight(1f, fill = false),
+                        )
+                        if (authSession.isAuthorizedAdmin) {
+                            Surface(
+                                shape = RoundedCornerShape(5.dp),
+                                color = marketColors.bullishContainer,
+                                modifier = Modifier.testTag("drawer_admin_verified_badge"),
+                            ) {
+                                Row(
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                                ) {
+                                    Icon(
+                                        imageVector = Icons.Rounded.CheckCircle,
+                                        contentDescription = null,
+                                        tint = marketColors.bullish,
+                                        modifier = Modifier.size(10.dp),
+                                    )
+                                    Text(
+                                        text = "ADMIN",
+                                        style = MaterialTheme.typography.labelSmall.copy(
+                                            fontSize = 9.sp,
+                                            fontWeight = FontWeight.Bold,
+                                        ),
+                                        color = marketColors.bullish,
+                                    )
+                                }
+                            }
+                        } else if (authSession.isSignedIn) {
+                            Surface(
+                                shape = RoundedCornerShape(5.dp),
+                                color = marketColors.smeContainer,
+                                modifier = Modifier.testTag("drawer_user_category_badge"),
+                            ) {
+                                Text(
+                                    text = investorCategory.badgeLabel,
+                                    style = MaterialTheme.typography.labelSmall.copy(
+                                        fontSize = 9.sp,
+                                        fontWeight = FontWeight.Bold,
+                                    ),
+                                    color = marketColors.smeBadge,
+                                    modifier = Modifier.padding(horizontal = 5.dp, vertical = 2.dp),
+                                )
+                            }
+                        }
+                    }
+
+                    Text(
+                        text = when {
+                            authSession.isAuthorizedAdmin -> {
+                                if (activeOverrideCount > 0) {
+                                    "${authSession.email} • $activeOverrideCount overrides"
+                                } else {
+                                    authSession.email
+                                }
+                            }
+                            authSession.isSignedIn -> {
+                                if (bookmarkedCount > 0) {
+                                    "${authSession.email} • $bookmarkedCount saved"
+                                } else {
+                                    authSession.email
+                                }
+                            }
+                            else -> "Sign in to sync watchlist & alerts"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = marketColors.mutedText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+
+                if (authSession.isSignedIn) {
+                    IconButton(
+                        onClick = onSignOut,
+                        modifier = Modifier
+                            .size(36.dp)
+                            .testTag("drawer_user_sign_out_button"),
+                    ) {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.Logout,
+                            contentDescription = "Sign out",
+                            tint = marketColors.mutedText,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                }
+            }
+
+            if (authSession.isAuthorizedAdmin) {
+                // Owner admin sees both personal Profile and exclusive Admin Dashboard
+                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                    Button(
+                        onClick = onOpenAdminDashboard,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(44.dp)
+                            .testTag("drawer_open_admin_dashboard_button"),
+                    ) {
+                        Text(
+                            text = "Admin Dashboard",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.SemiBold,
+                        )
+                        Spacer(modifier = Modifier.width(4.dp))
+                        Icon(
+                            imageVector = Icons.Rounded.ChevronRight,
+                            contentDescription = null,
+                            modifier = Modifier.size(18.dp),
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = onOpenUserProfile,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(42.dp)
+                            .testTag("drawer_open_user_profile_button"),
+                    ) {
+                        Text(
+                            text = "My Profile",
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
+                }
+            } else if (authSession.isSignedIn) {
+                // Regular signed-in user sees ONLY their Investor Profile — zero Admin controls
+                Button(
+                    onClick = onOpenUserProfile,
+                    shape = RoundedCornerShape(10.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .height(44.dp)
+                        .testTag("drawer_open_user_profile_button"),
+                ) {
+                    Text(
+                        text = "Open Profile",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(modifier = Modifier.width(4.dp))
+                    Icon(
+                        imageVector = Icons.Rounded.ChevronRight,
+                        contentDescription = null,
+                        modifier = Modifier.size(18.dp),
+                    )
+                }
+            } else {
+                // Signed-out guest sees friendly Sign in + View Profile — zero Admin controls
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.spacedBy(8.dp),
+                ) {
+                    Button(
+                        onClick = onGoogleSignIn,
+                        enabled = !isSigningIn,
+                        shape = RoundedCornerShape(10.dp),
+                        colors = ButtonDefaults.buttonColors(
+                            containerColor = MaterialTheme.colorScheme.primary,
+                        ),
+                        modifier = Modifier
+                            .weight(1f)
+                            .height(44.dp)
+                            .testTag("drawer_google_sign_in_button"),
+                    ) {
+                        if (isSigningIn) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = MaterialTheme.colorScheme.onPrimary,
+                            )
+                        } else {
+                            Text(
+                                text = "Sign in",
+                                style = MaterialTheme.typography.labelLarge,
+                                fontWeight = FontWeight.SemiBold,
+                            )
+                        }
+                    }
+                    OutlinedButton(
+                        onClick = onOpenUserProfile,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier
+                            .height(44.dp)
+                            .testTag("drawer_open_user_profile_button"),
+                    ) {
+                        Text(
+                            text = "Profile",
+                            style = MaterialTheme.typography.labelLarge,
+                        )
+                    }
                 }
             }
         }

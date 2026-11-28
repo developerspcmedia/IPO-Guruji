@@ -59,6 +59,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.ads.ConsentManager
+import com.example.ads.NativeAdPlacement
+import com.example.ads.NativeAdSlot
 import com.example.data.model.BoardType
 import com.example.data.model.IpoDateUtils
 import com.example.data.model.IpoEntity
@@ -262,10 +266,10 @@ fun YearWiseIpoListScreen(
                     }
                 } else {
                     items(items = filteredIpos, key = { it.id }) { ipo ->
-                        val isListed = IpoDateUtils.isCloseDatePassed(
+                        val isListed = IpoDateUtils.isListingDateArrived(
+                            listingDate = ipo.listingDate,
                             closeDate = ipo.closeDate,
                             status = ipo.status,
-                            listingDate = ipo.listingDate,
                         )
                         val gainTint = if (ipo.gmpRupees >= 0) marketColors.bullish else marketColors.bearish
                         Card(
@@ -635,6 +639,7 @@ fun AllotmentHubScreen(
     onBack: () -> Unit,
     modifier: Modifier = Modifier,
     onOpenAllotmentAlerts: () -> Unit = {},
+    onAdImpression: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val marketColors = LocalMarketColors.current
@@ -694,6 +699,8 @@ fun AllotmentHubScreen(
             "Blocked ASBA/UPI funds are released on T+2 if shares are not allotted.",
         )
     }
+
+    val canRequestAds by ConsentManager.canRequestAds.collectAsStateWithLifecycle()
 
     Column(
         modifier = modifier
@@ -843,6 +850,17 @@ fun AllotmentHubScreen(
                                 modifier = Modifier.size(18.dp),
                             )
                         }
+                    }
+                }
+
+                if (canRequestAds) {
+                    item(key = "allotment_hub_native_ad_2") {
+                        NativeAdSlot(
+                            placement = NativeAdPlacement.SECONDARY,
+                            topPaddingDp = 4,
+                            onAdImpression = onAdImpression,
+                            slotTag = "allotment_hub_native_ad",
+                        )
                     }
                 }
 

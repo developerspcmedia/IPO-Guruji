@@ -1,5 +1,8 @@
 package com.example.ui.screens
 
+import android.app.Activity
+import android.content.Context
+import android.content.ContextWrapper
 import android.os.Build
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
@@ -23,12 +26,14 @@ import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.foundation.verticalScroll
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
 import androidx.compose.material.icons.outlined.AutoAwesome
 import androidx.compose.material.icons.outlined.BrightnessAuto
 import androidx.compose.material.icons.outlined.DarkMode
 import androidx.compose.material.icons.outlined.Fingerprint
 import androidx.compose.material.icons.outlined.LightMode
 import androidx.compose.material.icons.outlined.NotificationsActive
+import androidx.compose.material.icons.outlined.PrivacyTip
 import androidx.compose.material.icons.outlined.ViewStream
 import androidx.compose.material.icons.rounded.CheckCircle
 import androidx.compose.material3.ExperimentalMaterial3Api
@@ -55,6 +60,8 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.ads.ConsentManager
 import com.example.data.preferences.ThemePreference
 import com.example.security.BiometricVaultLock
 import com.example.ui.components.glassBorderStroke
@@ -84,6 +91,8 @@ fun SettingsBottomSheet(
     biometricLockEnabled: Boolean = false,
     onToggleCompactCards: (Boolean) -> Unit = {},
     onToggleBiometricLock: (Boolean) -> Unit = {},
+    isPrivacyOptionsRequired: Boolean = ConsentManager.isPrivacyOptionsRequired.collectAsStateWithLifecycle().value,
+    onOpenPrivacyOptions: (() -> Unit)? = null,
 ) {
     val context = LocalContext.current
     val marketColors = LocalMarketColors.current
@@ -432,6 +441,70 @@ fun SettingsBottomSheet(
                 }
             }
 
+            if (isPrivacyOptionsRequired) {
+                Surface(
+                    shape = MaterialTheme.shapes.large,
+                    color = glass.cardFill,
+                    contentColor = MaterialTheme.colorScheme.onSurface,
+                    border = glassBorderStroke(glass = glass, width = 1.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .clip(MaterialTheme.shapes.large)
+                        .minimumInteractiveComponentSize()
+                        .clickable {
+                            if (onOpenPrivacyOptions != null) {
+                                onOpenPrivacyOptions()
+                            } else {
+                                context.findSettingsActivity()?.let { activity ->
+                                    ConsentManager.showPrivacyOptionsForm(activity)
+                                }
+                            }
+                        }
+                        .testTag("settings_privacy_ad_choices_row"),
+                ) {
+                    Row(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .padding(14.dp),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Row(
+                            modifier = Modifier.weight(1f),
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(10.dp),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.PrivacyTip,
+                                contentDescription = null,
+                                tint = MaterialTheme.colorScheme.primary,
+                                modifier = Modifier.size(20.dp),
+                            )
+                            Column {
+                                Text(
+                                    text = "Privacy & ad choices",
+                                    style = MaterialTheme.typography.bodyMedium,
+                                    fontWeight = FontWeight.SemiBold,
+                                    color = MaterialTheme.colorScheme.onSurface,
+                                )
+                                Text(
+                                    text = "Manage ad consent preferences for your region",
+                                    style = MaterialTheme.typography.bodySmall,
+                                    color = marketColors.mutedText,
+                                )
+                            }
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                            contentDescription = "Open privacy and ad choices",
+                            tint = marketColors.mutedText,
+                            modifier = Modifier.size(20.dp),
+                        )
+                    }
+                }
+            }
+
             // Disclaimer
             Text(
                 text = "Disclaimer: IPO Guruji provides educational IPO market tracking, Grey Market Premium estimates, and restated RHP financial summaries. GMP figures are unofficial market indicators. Always consult a SEBI-registered advisor before investing.",
@@ -440,6 +513,12 @@ fun SettingsBottomSheet(
             )
         }
     }
+}
+
+private tailrec fun Context.findSettingsActivity(): Activity? = when (this) {
+    is Activity -> this
+    is ContextWrapper -> baseContext.findSettingsActivity()
+    else -> null
 }
 
 @Composable
@@ -452,7 +531,7 @@ private fun ThemeOptionCard(
     val glass = LocalGlassStyle.current
     val marketColors = LocalMarketColors.current
     val containerColor = when {
-        selected && glass.isAmoled -> MaterialTheme.colorScheme.primaryContainer
+        selected && glass.isDark -> MaterialTheme.colorScheme.primaryContainer
         selected -> glass.elevatedFill
         else -> glass.cardFill
     }
@@ -554,7 +633,7 @@ private fun ThemePreviewSwatch(preference: ThemePreference) {
                     modifier = Modifier
                         .weight(1f)
                         .fillMaxHeight()
-                        .background(Color(0xFF000000)),
+                        .background(Color(0xFF121212)),
                 )
             }
         }
@@ -592,24 +671,24 @@ private fun ThemePreviewSwatch(preference: ThemePreference) {
                 modifier = Modifier
                     .size(width = 38.dp, height = 24.dp)
                     .clip(swatchShape)
-                    .background(Color(0xFF000000))
-                    .border(0.9.dp, Color(0xFF3B9EFF).copy(alpha = 0.7f), swatchShape)
+                    .background(Color(0xFF121212))
+                    .border(0.9.dp, Color(0xFF34343B), swatchShape)
                     .padding(4.dp),
             ) {
                 Column(verticalArrangement = Arrangement.spacedBy(3.dp)) {
                     Box(
                         modifier = Modifier
-                            .fillMaxWidth(0.7f)
+                            .fillMaxWidth(0.68f)
                             .height(4.dp)
                             .clip(CircleShape)
-                            .background(Color.White),
+                            .background(Color(0xFFF4F4F5)),
                     )
                     Box(
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(7.dp)
                             .clip(RoundedCornerShape(3.dp))
-                            .background(Color(0xFF171920)),
+                            .background(Color(0xFF26262A)),
                     )
                 }
             }

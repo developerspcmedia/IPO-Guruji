@@ -5,8 +5,10 @@ import android.net.Uri
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
+import androidx.compose.foundation.horizontalScroll
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.BoxWithConstraints
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
@@ -24,25 +26,31 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.outlined.FactCheck
 import androidx.compose.material.icons.automirrored.rounded.ArrowBack
-import androidx.compose.material.icons.outlined.NotificationsActive
+import androidx.compose.material.icons.automirrored.rounded.OpenInNew
 import androidx.compose.material.icons.outlined.Info
+import androidx.compose.material.icons.outlined.NotificationsActive
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.rounded.Add
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.Remove
+import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
+import androidx.compose.material3.ExtendedFloatingActionButton
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.ModalBottomSheet
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.Surface
@@ -50,6 +58,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TopAppBar
 import androidx.compose.material3.TopAppBarDefaults
 import androidx.compose.material3.minimumInteractiveComponentSize
+import androidx.compose.material3.rememberModalBottomSheetState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -66,7 +75,9 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import com.example.ads.AdBannerSlot
+import com.example.ads.BannerAdPlacement
 import com.example.data.model.BoardType
+import com.example.data.model.IpoDateUtils
 import com.example.data.model.IpoEntity
 import com.example.data.preferences.GmpWatchRule
 import com.example.ui.components.FinancialBarChart
@@ -84,6 +95,7 @@ import com.example.ui.theme.LocalGlassStyle
 import com.example.ui.theme.LocalMarketColors
 import com.example.ui.theme.MonoNumericStyle
 import com.example.ui.viewmodel.DetailTab
+import com.example.ui.viewmodel.IpoAiUiState
 import com.example.ui.viewmodel.SubscriptionSyncUiState
 import java.util.Locale
 
@@ -110,10 +122,14 @@ fun IpoDetailScreen(
     isLoading: Boolean = false,
     subscriptionSyncState: SubscriptionSyncUiState = SubscriptionSyncUiState(),
     onRefreshSubscription: () -> Unit = onRefresh,
+    aiState: IpoAiUiState = IpoAiUiState.Idle,
+    onAskIpoAi: (String?) -> Unit = {},
+    onClearAiResponse: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val marketColors = LocalMarketColors.current
     var showShareSheet by remember { mutableStateOf(false) }
+    var showCheckAllotmentSheet by remember { mutableStateOf(false) }
 
     val openAllotmentPortal: () -> Unit = {
         ipo?.let { target ->
@@ -214,6 +230,46 @@ fun IpoDetailScreen(
                 ),
             )
         },
+        floatingActionButton = {
+            if (ipo != null) {
+                val isAllotmentPhase = IpoDateUtils.isInAllotmentPhase(
+                    closeDate = ipo.closeDate,
+                    listingDate = ipo.listingDate,
+                    status = ipo.status,
+                )
+                ExtendedFloatingActionButton(
+                    onClick = { showCheckAllotmentSheet = true },
+                    icon = {
+                        Icon(
+                            imageVector = Icons.AutoMirrored.Outlined.FactCheck,
+                            contentDescription = "Check ${ipo.companyName} IPO allotment",
+                            modifier = Modifier.size(20.dp),
+                        )
+                    },
+                    text = {
+                        Text(
+                            text = "Check Allotment",
+                            style = MaterialTheme.typography.labelLarge,
+                            fontWeight = FontWeight.Bold,
+                        )
+                    },
+                    containerColor = if (isAllotmentPhase) {
+                        marketColors.bullish
+                    } else {
+                        MaterialTheme.colorScheme.onSurface
+                    },
+                    contentColor = if (isAllotmentPhase) {
+                        Color.White
+                    } else {
+                        MaterialTheme.colorScheme.surface
+                    },
+                    shape = RoundedCornerShape(99.dp),
+                    modifier = Modifier
+                        .minimumInteractiveComponentSize()
+                        .testTag("detail_check_allotment_fab"),
+                )
+            }
+        },
         bottomBar = {
             Column(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
                 AdBannerSlot(onAdImpression = onAdImpression)
@@ -297,7 +353,12 @@ fun IpoDetailScreen(
                     .fillMaxSize()
                     .widthIn(max = 760.dp)
                     .testTag("detail_lazy_column"),
-                contentPadding = PaddingValues(16.dp),
+                contentPadding = PaddingValues(
+                    start = 16.dp,
+                    end = 16.dp,
+                    top = 16.dp,
+                    bottom = 88.dp,
+                ),
                 verticalArrangement = Arrangement.spacedBy(14.dp),
             ) {
                 // 1. Compact Hero Header (Logo, Board/Status, Offer Date, Offer Price & Lot Size)
@@ -382,6 +443,14 @@ fun IpoDetailScreen(
 
                 when (selectedTab) {
                     DetailTab.ALL -> {
+                        item(key = "ai_ipo_analyst") {
+                            IpoAiInsightCard(
+                                ipo = ipo,
+                                aiState = aiState,
+                                onAskQuestion = onAskIpoAi,
+                                onClearResponse = onClearAiResponse,
+                            )
+                        }
                         item(key = "smart_ipo_alerts") {
                             SmartIpoAlertsCard(
                                 ipo = ipo,
@@ -398,6 +467,7 @@ fun IpoDetailScreen(
                                 isRefreshingSubscription = subscriptionSyncState.isRefreshing,
                                 subscriptionStatusMessage = subscriptionSyncState.statusMessage,
                                 subscriptionSyncLabel = subscriptionSyncState.lastSyncedLabel,
+                                subscriptionSourceStatuses = subscriptionSyncState.sourceStatusesLabel,
                                 isAutoPollingActive = subscriptionSyncState.isAutoPollingActive,
                                 onRefreshSubscription = onRefreshSubscription,
                                 onVerifySubscriptionOnline = openVerifySubscriptionWeb,
@@ -426,6 +496,7 @@ fun IpoDetailScreen(
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 ApplicationsReservedCard(ipo = ipo)
                                 AdBannerSlot(
+                                    placement = BannerAdPlacement.SECONDARY,
                                     onAdImpression = onAdImpression,
                                     topPaddingWhenLoadedDp = 14,
                                     roundedCardStyle = true,
@@ -476,6 +547,14 @@ fun IpoDetailScreen(
                     }
 
                     DetailTab.OVERVIEW -> {
+                        item(key = "ai_ipo_analyst") {
+                            IpoAiInsightCard(
+                                ipo = ipo,
+                                aiState = aiState,
+                                onAskQuestion = onAskIpoAi,
+                                onClearResponse = onClearAiResponse,
+                            )
+                        }
                         item(key = "smart_ipo_alerts") {
                             SmartIpoAlertsCard(
                                 ipo = ipo,
@@ -505,6 +584,7 @@ fun IpoDetailScreen(
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 ApplicationsReservedCard(ipo = ipo)
                                 AdBannerSlot(
+                                    placement = BannerAdPlacement.SECONDARY,
                                     onAdImpression = onAdImpression,
                                     topPaddingWhenLoadedDp = 14,
                                     roundedCardStyle = true,
@@ -541,6 +621,7 @@ fun IpoDetailScreen(
                                 isRefreshingSubscription = subscriptionSyncState.isRefreshing,
                                 subscriptionStatusMessage = subscriptionSyncState.statusMessage,
                                 subscriptionSyncLabel = subscriptionSyncState.lastSyncedLabel,
+                                subscriptionSourceStatuses = subscriptionSyncState.sourceStatusesLabel,
                                 isAutoPollingActive = subscriptionSyncState.isAutoPollingActive,
                                 onRefreshSubscription = onRefreshSubscription,
                                 onVerifySubscriptionOnline = openVerifySubscriptionWeb,
@@ -553,6 +634,7 @@ fun IpoDetailScreen(
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 ApplicationBreakupCard(ipo = ipo)
                                 AdBannerSlot(
+                                    placement = BannerAdPlacement.SECONDARY,
                                     onAdImpression = onAdImpression,
                                     topPaddingWhenLoadedDp = 14,
                                     roundedCardStyle = true,
@@ -577,6 +659,7 @@ fun IpoDetailScreen(
                             Column(modifier = Modifier.fillMaxWidth()) {
                                 FinancialStatementTableCard(ipo = ipo)
                                 AdBannerSlot(
+                                    placement = BannerAdPlacement.SECONDARY,
                                     onAdImpression = onAdImpression,
                                     topPaddingWhenLoadedDp = 14,
                                     roundedCardStyle = true,
@@ -606,6 +689,131 @@ fun IpoDetailScreen(
             onDismiss = { showShareSheet = false },
         )
     }
+
+    if (showCheckAllotmentSheet && ipo != null) {
+        val isAllotmentPhase = IpoDateUtils.isInAllotmentPhase(
+            closeDate = ipo.closeDate,
+            listingDate = ipo.listingDate,
+            status = ipo.status,
+        )
+        val isListed = IpoDateUtils.isListingDateArrived(
+            listingDate = ipo.listingDate,
+            closeDate = ipo.closeDate,
+            status = ipo.status,
+        )
+        val phaseNote = when {
+            isAllotmentPhase -> "Allotment Phase • Expected on ${ipo.allotmentDate}"
+            isListed -> "Allotment Finalized • Listed on ${ipo.listingDate}"
+            else -> "Allotment Date: ${ipo.allotmentDate} • Listing: ${ipo.listingDate}"
+        }
+        val checkSheetState = rememberModalBottomSheetState(skipPartiallyExpanded = true)
+        ModalBottomSheet(
+            onDismissRequest = { showCheckAllotmentSheet = false },
+            sheetState = checkSheetState,
+            shape = RoundedCornerShape(topStart = 28.dp, topEnd = 28.dp),
+            containerColor = glass.sheetFill,
+        ) {
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 20.dp)
+                    .padding(bottom = 28.dp)
+                    .testTag("detail_check_allotment_sheet"),
+                verticalArrangement = Arrangement.spacedBy(12.dp),
+            ) {
+                Text(
+                    text = "Check ${ipo.companyName} Allotment",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.onSurface,
+                )
+                Text(
+                    text = phaseNote,
+                    style = MaterialTheme.typography.bodySmall,
+                    fontWeight = FontWeight.Medium,
+                    color = if (isAllotmentPhase) marketColors.bullish else marketColors.mutedText,
+                )
+
+                Surface(
+                    shape = RoundedCornerShape(14.dp),
+                    color = MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.5f),
+                    border = BorderStroke(0.8.dp, marketColors.border),
+                    modifier = Modifier.fillMaxWidth(),
+                ) {
+                    Column(
+                        modifier = Modifier.padding(14.dp),
+                        verticalArrangement = Arrangement.spacedBy(4.dp),
+                    ) {
+                        Text(
+                            text = "OFFICIAL REGISTRAR",
+                            style = MaterialTheme.typography.labelSmall,
+                            fontWeight = FontWeight.Bold,
+                            color = marketColors.mutedText,
+                        )
+                        Text(
+                            text = ipo.registrarName,
+                            style = MaterialTheme.typography.titleSmall,
+                            fontWeight = FontWeight.SemiBold,
+                            color = MaterialTheme.colorScheme.onSurface,
+                        )
+                        Text(
+                            text = "Keep your 10-digit PAN, Application No., or DP/Client ID ready to check status instantly.",
+                            style = MaterialTheme.typography.bodySmall,
+                            color = marketColors.mutedText,
+                        )
+                    }
+                }
+
+                Button(
+                    onClick = {
+                        showCheckAllotmentSheet = false
+                        openAllotmentPortal()
+                    },
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .minimumInteractiveComponentSize()
+                        .testTag("detail_check_allotment_registrar_btn"),
+                ) {
+                    Text(
+                        text = "Check Status on Registrar Portal",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.OpenInNew,
+                        contentDescription = null,
+                        modifier = Modifier.size(16.dp),
+                    )
+                }
+
+                OutlinedButton(
+                    onClick = {
+                        showCheckAllotmentSheet = false
+                        onTrackAllotment(ipo.id)
+                    },
+                    shape = RoundedCornerShape(14.dp),
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .minimumInteractiveComponentSize()
+                        .testTag("detail_check_allotment_tracker_btn"),
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.NotificationsActive,
+                        contentDescription = null,
+                        modifier = Modifier.size(17.dp),
+                    )
+                    Spacer(modifier = Modifier.width(6.dp))
+                    Text(
+                        text = "Use Saved PAN & Auto-Alert Tracker",
+                        style = MaterialTheme.typography.labelLarge,
+                        fontWeight = FontWeight.SemiBold,
+                    )
+                }
+            }
+        }
+    }
 }
 
 @Composable
@@ -630,8 +838,8 @@ private fun DetailTabSwitcher(
         ) {
             DetailTab.entries.forEach { tab ->
                 val selected = selectedTab == tab
-                val selectedBg = if (glass.isAmoled) {
-                    MaterialTheme.colorScheme.primaryContainer
+                val selectedBg = if (glass.isDark) {
+                    MaterialTheme.colorScheme.surfaceContainerHighest
                 } else {
                     glass.elevatedFill
                 }
@@ -639,8 +847,8 @@ private fun DetailTabSwitcher(
                     shape = RoundedCornerShape(99.dp),
                     color = if (selected) selectedBg else Color.Transparent,
                     border = if (selected) {
-                        if (glass.isAmoled) {
-                            BorderStroke(1.dp, MaterialTheme.colorScheme.primary.copy(alpha = 0.65f))
+                        if (glass.isDark) {
+                            BorderStroke(1.dp, MaterialTheme.colorScheme.outline)
                         } else {
                             glassBorderStroke(glass = glass, width = 0.85.dp)
                         }
@@ -1075,6 +1283,7 @@ private fun ApplicationBreakupCard(ipo: IpoEntity) {
     val marketColors = LocalMarketColors.current
     val glass = LocalGlassStyle.current
     val rows = ipo.applicationWiseBreakup
+    val hasLiveCounts = ipo.hasLiveApplicationCounts
 
     Card(
         modifier = Modifier
@@ -1101,24 +1310,42 @@ private fun ApplicationBreakupCard(ipo: IpoEntity) {
                     style = MaterialTheme.typography.titleMedium,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.primary,
+                    modifier = Modifier.weight(1f),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis,
                 )
-                Box(
-                    modifier = Modifier
-                        .clip(RoundedCornerShape(99.dp))
-                        .background(MaterialTheme.colorScheme.primaryContainer)
-                        .padding(horizontal = 8.dp, vertical = 3.dp),
+                Spacer(modifier = Modifier.width(8.dp))
+                Surface(
+                    shape = RoundedCornerShape(99.dp),
+                    color = if (hasLiveCounts) {
+                        marketColors.bullishContainer
+                    } else {
+                        MaterialTheme.colorScheme.surfaceVariant
+                    },
+                    modifier = Modifier.testTag("application_breakup_source_badge"),
                 ) {
                     Text(
-                        text = if (ipo.boardType == BoardType.SME) "SME Lots" else "SEBI Quota",
+                        text = if (hasLiveCounts) "LIVE EXCHANGE" else "ESTIMATED",
                         style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = MaterialTheme.colorScheme.primary,
+                        fontWeight = FontWeight.Bold,
+                        color = if (hasLiveCounts) {
+                            marketColors.bullish
+                        } else {
+                            marketColors.mutedText
+                        },
+                        maxLines = 1,
+                        softWrap = false,
+                        modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp),
                     )
                 }
             }
             Spacer(modifier = Modifier.height(6.dp))
             Text(
-                text = "Estimated reserved applications, received bids, and allotment probability across Retail, S-HNI, and Big HNI categories.",
+                text = if (hasLiveCounts) {
+                    "Live exchange application counts synced from NSE/BSE & exchange trackers across investor categories."
+                } else {
+                    "Estimated reserved applications, received bids, and allotment odds from SEBI quota rules (live exchange counts pending)."
+                },
                 style = MaterialTheme.typography.bodySmall,
                 color = marketColors.mutedText,
             )
@@ -1134,7 +1361,8 @@ private fun ApplicationBreakupCard(ipo: IpoEntity) {
             }
 
             val totalReserved = rows.sumOf { it.reservedApplications }
-            val totalReceived = rows.sumOf { it.receivedApplications }
+            val totalReceived = ipo.liveTotalApplications.takeIf { it > 0L }
+                ?: rows.sumOf { it.receivedApplications }
             val retailRow = rows.firstOrNull { it.id == "retail" }
 
             Row(
@@ -1143,7 +1371,7 @@ private fun ApplicationBreakupCard(ipo: IpoEntity) {
             ) {
                 BreakupMetricBox(
                     label = "Reserved Apps",
-                    value = formatCompactApps(totalReserved),
+                    value = if (totalReserved > 0L) formatCompactApps(totalReserved) else "—",
                     modifier = Modifier.weight(1f),
                 )
                 BreakupMetricBox(
@@ -1189,14 +1417,19 @@ private fun ApplicationBreakupCard(ipo: IpoEntity) {
                             fontWeight = FontWeight.SemiBold,
                             color = MaterialTheme.colorScheme.onSurface,
                         )
+                        val subCaption = if (hasLiveCounts && !row.isLiveExchangeCount) {
+                            "${row.quotaLabel} • Est."
+                        } else {
+                            row.quotaLabel
+                        }
                         Text(
-                            text = row.quotaLabel,
+                            text = subCaption,
                             style = MaterialTheme.typography.labelSmall,
                             color = marketColors.mutedText,
                         )
                     }
                     Text(
-                        text = formatCompactApps(row.reservedApplications),
+                        text = if (row.reservedApplications > 0L) formatCompactApps(row.reservedApplications) else "—",
                         style = MonoNumericStyle.copy(
                             fontSize = MaterialTheme.typography.bodySmall.fontSize,
                             fontWeight = FontWeight.Medium,
@@ -1212,7 +1445,11 @@ private fun ApplicationBreakupCard(ipo: IpoEntity) {
                             fontWeight = FontWeight.SemiBold,
                         ),
                         textAlign = TextAlign.End,
-                        color = if (row.receivedApplications > 0L) MaterialTheme.colorScheme.primary else marketColors.mutedText,
+                        color = if (row.receivedApplications > 0L) {
+                            if (row.isLiveExchangeCount) marketColors.bullish else MaterialTheme.colorScheme.primary
+                        } else {
+                            marketColors.mutedText
+                        },
                         modifier = Modifier.weight(0.95f),
                     )
                     Text(
@@ -1238,14 +1475,14 @@ private fun ApplicationBreakupCard(ipo: IpoEntity) {
                 verticalAlignment = Alignment.CenterVertically,
             ) {
                 Text(
-                    text = "Total (RII + NII)",
+                    text = if (hasLiveCounts) "Total Applications" else "Total (RII + NII)",
                     style = MaterialTheme.typography.bodySmall,
                     fontWeight = FontWeight.Bold,
                     color = MaterialTheme.colorScheme.onSurface,
                     modifier = Modifier.weight(1.25f),
                 )
                 Text(
-                    text = formatCompactApps(totalReserved),
+                    text = if (totalReserved > 0L) formatCompactApps(totalReserved) else "—",
                     style = MonoNumericStyle.copy(
                         fontSize = MaterialTheme.typography.bodySmall.fontSize,
                         fontWeight = FontWeight.Bold,
@@ -1261,7 +1498,7 @@ private fun ApplicationBreakupCard(ipo: IpoEntity) {
                         fontWeight = FontWeight.Bold,
                     ),
                     textAlign = TextAlign.End,
-                    color = MaterialTheme.colorScheme.primary,
+                    color = if (hasLiveCounts) marketColors.bullish else MaterialTheme.colorScheme.primary,
                     modifier = Modifier.weight(0.95f),
                 )
                 Text(
@@ -1318,55 +1555,144 @@ private fun BreakupMetricBox(
 @Composable
 private fun DailySubscriptionTableCard(ipo: IpoEntity) {
     val marketColors = LocalMarketColors.current
-    SectionCard(title = "Subscription Details") {
-        Text(
-            text = "Updated at End of the Day • Day-by-Day Demand Progression",
-            style = MaterialTheme.typography.labelSmall,
-            color = marketColors.mutedText,
-        )
-        Spacer(modifier = Modifier.height(10.dp))
-        if (ipo.dailySubscriptions.isEmpty()) {
-            Text(
-                text = "Bidding opens on ${ipo.openDate}. Live QIB, NII, and Retail demand will appear here once exchange bidding begins.",
-                style = MaterialTheme.typography.bodyMedium,
-                color = marketColors.mutedText,
-            )
-        } else {
+    val glass = LocalGlassStyle.current
+
+    Card(
+        modifier = Modifier
+            .fillMaxWidth()
+            .testTag("daily_subscription_table_card"),
+        shape = MaterialTheme.shapes.large,
+        colors = CardDefaults.cardColors(
+            containerColor = glass.cardFill,
+            contentColor = MaterialTheme.colorScheme.onSurface,
+        ),
+        border = glassBorderStroke(glass = glass, width = 1.dp),
+        elevation = CardDefaults.cardElevation(
+            defaultElevation = if (glass.isDark || glass.isGlass) 0.dp else 1.5.dp,
+        ),
+    ) {
+        Column(modifier = Modifier.padding(16.dp)) {
             Row(
-                modifier = Modifier
-                    .fillMaxWidth()
-                    .clip(RoundedCornerShape(8.dp))
-                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.6f))
-                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                modifier = Modifier.fillMaxWidth(),
                 horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
             ) {
-                TableHeaderCell("As on", Modifier.weight(1.1f))
-                TableHeaderCell("QIB", Modifier.weight(0.95f), TextAlign.End)
-                TableHeaderCell("NII", Modifier.weight(0.95f), TextAlign.End)
-                TableHeaderCell("Retail", Modifier.weight(0.95f), TextAlign.End)
-                TableHeaderCell("Total", Modifier.weight(1f), TextAlign.End)
+                Text(
+                    text = "Day-Wise Subscription",
+                    style = MaterialTheme.typography.titleMedium,
+                    fontWeight = FontWeight.Bold,
+                    color = MaterialTheme.colorScheme.primary,
+                )
+                if (ipo.dailySubscriptions.isNotEmpty()) {
+                    Text(
+                        text = "${ipo.dailySubscriptions.size} ${if (ipo.dailySubscriptions.size == 1) "Day" else "Days"}",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.SemiBold,
+                        color = marketColors.mutedText,
+                    )
+                }
             }
             Spacer(modifier = Modifier.height(4.dp))
-            ipo.dailySubscriptions.forEachIndexed { idx, day ->
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(horizontal = 4.dp, vertical = 9.dp),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                ) {
-                    Text(
-                        text = day.dayLabel,
-                        style = MaterialTheme.typography.bodySmall,
-                        fontWeight = FontWeight.SemiBold,
-                        modifier = Modifier.weight(1.1f),
-                    )
-                    TableValueCell(formatSubX(day.qibX), Modifier.weight(0.95f))
-                    TableValueCell(formatSubX(day.niiX), Modifier.weight(0.95f))
-                    TableValueCell(formatSubX(day.retailX), Modifier.weight(0.95f))
-                    TableValueCell(formatSubX(day.totalX), Modifier.weight(1f), highlight = true)
-                }
-                if (idx < ipo.dailySubscriptions.lastIndex) {
-                    HorizontalDivider(color = marketColors.border.copy(alpha = 0.5f), thickness = 0.6.dp)
+            Text(
+                text = "Day 1 / Day 2 / Day 3 progression across QIB, bNII, sNII, Retail & Total",
+                style = MaterialTheme.typography.labelSmall,
+                color = marketColors.mutedText,
+            )
+            Spacer(modifier = Modifier.height(10.dp))
+
+            if (ipo.dailySubscriptions.isEmpty()) {
+                Text(
+                    text = "Bidding opens on ${ipo.openDate}. Day-by-day QIB, bNII, sNII, and Retail demand will appear here once exchange bidding begins.",
+                    style = MaterialTheme.typography.bodyMedium,
+                    color = marketColors.mutedText,
+                )
+            } else {
+                val hScrollState = rememberScrollState()
+                BoxWithConstraints(modifier = Modifier.fillMaxWidth()) {
+                    val tableWidth = if (maxWidth > 432.dp) maxWidth else 432.dp
+                    Column(
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .horizontalScroll(hScrollState),
+                    ) {
+                        Column(modifier = Modifier.width(tableWidth)) {
+                            Row(
+                                modifier = Modifier
+                                    .fillMaxWidth()
+                                    .clip(RoundedCornerShape(8.dp))
+                                    .background(MaterialTheme.colorScheme.surfaceVariant.copy(alpha = 0.65f))
+                                    .padding(horizontal = 8.dp, vertical = 8.dp),
+                                verticalAlignment = Alignment.CenterVertically,
+                            ) {
+                                TableHeaderCell("Day / Date", Modifier.weight(1.25f))
+                                TableHeaderCell("QIB", Modifier.weight(0.85f), TextAlign.End)
+                                TableHeaderCell(
+                                    "bNII",
+                                    Modifier.weight(0.85f).testTag("daily_sub_header_bnii"),
+                                    TextAlign.End,
+                                )
+                                TableHeaderCell(
+                                    "sNII",
+                                    Modifier.weight(0.85f).testTag("daily_sub_header_snii"),
+                                    TextAlign.End,
+                                )
+                                TableHeaderCell("Retail", Modifier.weight(0.85f), TextAlign.End)
+                                TableHeaderCell("Total", Modifier.weight(0.95f), TextAlign.End)
+                            }
+                            Spacer(modifier = Modifier.height(4.dp))
+                            ipo.dailySubscriptions.forEachIndexed { idx, day ->
+                                val isLatest = idx == ipo.dailySubscriptions.lastIndex
+                                val resolvedBNii = if (day.bNiiX > 0.0) day.bNiiX else day.niiX
+                                val resolvedSNii = if (day.sNiiX > 0.0) day.sNiiX else day.niiX
+                                Row(
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .clip(RoundedCornerShape(6.dp))
+                                        .background(
+                                            if (isLatest) {
+                                                MaterialTheme.colorScheme.primaryContainer.copy(alpha = 0.28f)
+                                            } else {
+                                                Color.Transparent
+                                            },
+                                        )
+                                        .padding(horizontal = 8.dp, vertical = 9.dp)
+                                        .testTag("daily_sub_row_$idx"),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                ) {
+                                    Column(modifier = Modifier.weight(1.25f)) {
+                                        Text(
+                                            text = day.dayLabel,
+                                            style = MaterialTheme.typography.bodySmall,
+                                            fontWeight = if (isLatest) FontWeight.Bold else FontWeight.SemiBold,
+                                            color = if (isLatest) MaterialTheme.colorScheme.primary else MaterialTheme.colorScheme.onSurface,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis,
+                                        )
+                                        if (day.dateLabel.isNotBlank()) {
+                                            Text(
+                                                text = day.dateLabel,
+                                                style = MaterialTheme.typography.labelSmall,
+                                                color = marketColors.mutedText,
+                                                maxLines = 1,
+                                                overflow = TextOverflow.Ellipsis,
+                                            )
+                                        }
+                                    }
+                                    TableValueCell(formatSubX(day.qibX), Modifier.weight(0.85f))
+                                    TableValueCell(formatSubX(resolvedBNii), Modifier.weight(0.85f))
+                                    TableValueCell(formatSubX(resolvedSNii), Modifier.weight(0.85f))
+                                    TableValueCell(formatSubX(day.retailX), Modifier.weight(0.85f))
+                                    TableValueCell(formatSubX(day.totalX), Modifier.weight(0.95f), highlight = true)
+                                }
+                                if (idx < ipo.dailySubscriptions.lastIndex) {
+                                    HorizontalDivider(
+                                        color = marketColors.border.copy(alpha = 0.5f),
+                                        thickness = 0.6.dp,
+                                    )
+                                }
+                            }
+                        }
+                    }
                 }
             }
         }

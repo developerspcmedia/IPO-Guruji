@@ -14,8 +14,9 @@ enum class BiometricCapabilityStatus(val statusMessage: String) {
 }
 
 /**
- * Native AndroidX BiometricPrompt helper supporting Biometric (Fingerprint/Face) AND Device PIN/Pattern/Password.
- * Strictly on-device — zero credentials or biometric templates ever leave the Android OS keystore.
+ * Native AndroidX BiometricPrompt UI gate supporting Biometric (Fingerprint/Face) and Device PIN/Pattern/Password.
+ * Note: This prompt acts solely as a UI access gate — it does not encrypt data.
+ * At-rest encryption of sensitive profile fields (PAN, Demat ID, UPI handle) is handled separately by [CryptoBox].
  */
 object BiometricVaultLock {
     private const val ALLOWED_AUTHENTICATORS =

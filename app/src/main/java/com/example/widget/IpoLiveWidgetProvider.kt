@@ -85,10 +85,10 @@ class IpoLiveWidgetProvider : AppWidgetProvider() {
 
         fun selectTopWidgetIpos(allIpos: List<IpoEntity>): List<IpoEntity> {
             val active = allIpos.filter { ipo ->
-                !IpoDateUtils.isCloseDatePassed(
+                !IpoDateUtils.isListingDateArrived(
+                    listingDate = ipo.listingDate,
                     closeDate = ipo.closeDate,
                     status = ipo.status,
-                    listingDate = ipo.listingDate,
                 )
             }
             val pool = active.ifEmpty { allIpos }

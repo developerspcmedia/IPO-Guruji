@@ -77,6 +77,10 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import com.example.ads.AdBannerSlot
+import com.example.ads.BannerAdPlacement
+import com.example.ads.NativeAdPlacement
+import com.example.ads.NativeAdSlot
 import com.example.data.model.AllotmentWatchEntity
 import com.example.data.model.AllotmentWatchStatus
 import com.example.data.model.IpoEntity
@@ -118,6 +122,7 @@ fun AllotmentAlertsScreen(
     onUnlockVault: () -> Unit = {},
     onLockVaultNow: () -> Unit = {},
     onToggleBiometricLock: (Boolean) -> Unit = {},
+    onAdImpression: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val marketColors = LocalMarketColors.current
@@ -473,6 +478,14 @@ fun AllotmentAlertsScreen(
                     }
                 }
 
+                item(key = "allotment_native_ad_2") {
+                    NativeAdSlot(
+                        placement = NativeAdPlacement.SECONDARY,
+                        onAdImpression = onAdImpression,
+                        slotTag = "allotment_native_ad",
+                    )
+                }
+
                 if (uiState.allWatches.isEmpty()) {
                     item(key = "private_portfolio_pnl_empty") {
                         PrivatePortfolioPnlCard(
@@ -821,6 +834,16 @@ fun AllotmentAlertsScreen(
                             )
                         }
                     }
+                }
+
+                item(key = "allotment_banner_ad_2") {
+                    AdBannerSlot(
+                        placement = BannerAdPlacement.SECONDARY,
+                        onAdImpression = onAdImpression,
+                        roundedCardStyle = true,
+                        slotTag = "allotment_banner_ad_2",
+                        containerTag = "allotment_banner_ad_2_container",
+                    )
                 }
             }
         }

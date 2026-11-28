@@ -524,23 +524,28 @@ class ExampleRobolectricTest {
 
         composeTestRule.onNodeWithTag("refresh_gmp_button").assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("ipo_lazy_column")
-            .performScrollToNode(hasTestTag("status_chip_pre_apply"))
-        composeTestRule.onNodeWithTag("status_chip_pre_apply").performScrollTo().assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("timeline_tab_upcoming").assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
-        assertTrue(viewModel.uiState.value.filteredIpos.all { it.status == IpoStatus.PRE_APPLY })
-        composeTestRule.onNodeWithTag("status_chip_all").performScrollTo().performClick()
+        assertEquals(BoardTimelineTab.UPCOMING, viewModel.uiState.value.timelineTab)
+        composeTestRule.onNodeWithTag("timeline_tab_current").assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
-        composeTestRule.onNodeWithTag("bottom_bar_all").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("bottom_bar_mainboard").assertIsDisplayed().performClick()
+        assertEquals(BoardTimelineTab.CURRENT, viewModel.uiState.value.timelineTab)
+        composeTestRule.onNodeWithTag("status_chip_pre_apply").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("status_chip_all").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("bottom_bar_india").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("bottom_bar_usa").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("bottom_bar_mainboard").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("bottom_bar_sme").assertDoesNotExist()
+
+        composeTestRule.onNodeWithTag("board_filter_mainboard").assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
         assertEquals(BoardFilter.MAINBOARD, viewModel.uiState.value.boardFilter)
 
-        composeTestRule.onNodeWithTag("bottom_bar_sme").assertIsDisplayed().performClick()
+        composeTestRule.onNodeWithTag("board_filter_sme").assertIsDisplayed().performClick()
         composeTestRule.waitForIdle()
         assertEquals(BoardFilter.SME, viewModel.uiState.value.boardFilter)
 
-        composeTestRule.onNodeWithTag("bottom_bar_all").performClick()
+        composeTestRule.onNodeWithTag("board_filter_all").performClick()
         composeTestRule.waitForIdle()
         assertEquals(BoardFilter.ALL, viewModel.uiState.value.boardFilter)
 
@@ -806,7 +811,12 @@ class ExampleRobolectricTest {
             }
         }
         val expectedActiveCount = IpoSeedData.createInitialCatalog().count {
-            !IpoDateUtils.isCloseDatePassed(closeDate = it.closeDate, status = it.status)
+            IpoDateUtils.classifyTimelineTab(
+                openDate = it.openDate,
+                closeDate = it.closeDate,
+                listingDate = it.listingDate,
+                status = it.status,
+            ) == com.example.data.model.IpoTimelineBucket.CURRENT
         }
         val expectedLabel = if (expectedActiveCount == 1) "All • 1 IPO" else "All • $expectedActiveCount IPOs"
 
@@ -815,9 +825,10 @@ class ExampleRobolectricTest {
             composeTestRule.onAllNodes(hasText(expectedLabel)).fetchSemanticsNodes().isNotEmpty()
         }
         composeTestRule.onNodeWithText(expectedLabel).assertIsDisplayed()
-        composeTestRule.onNodeWithTag("ipo_lazy_column")
-            .performScrollToNode(hasTestTag("status_chip_all"))
-        composeTestRule.onNodeWithText("All IPOs").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("timeline_tab_current").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("timeline_tab_upcoming").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("timeline_tab_listed").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("status_chip_all").assertDoesNotExist()
         db.close()
     }
 
@@ -1149,34 +1160,44 @@ class ExampleRobolectricTest {
         }
         composeTestRule.waitForIdle()
 
-        // Segmented toggle is visible and defaults to Current & Upcoming
-        composeTestRule.onNodeWithTag("timeline_tab_current_upcoming").assertIsDisplayed()
+        // Segmented toggle is visible with Current, Upcoming, Listed and defaults to Current
+        composeTestRule.onNodeWithTag("timeline_tab_current").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("timeline_tab_upcoming").assertIsDisplayed()
         composeTestRule.onNodeWithTag("timeline_tab_listed").assertIsDisplayed()
-        assertEquals(BoardTimelineTab.CURRENT_UPCOMING, viewModel.uiState.value.timelineTab)
+        assertEquals(BoardTimelineTab.CURRENT, viewModel.uiState.value.timelineTab)
 
-        // Scroll the first card fully into view and verify redesigned 3-column metrics & View IPO CTA
+        // Scroll the first card fully into view and verify highlighted Start/Close Date boxes, GMP & CTA
         composeTestRule.onNodeWithTag("ipo_lazy_column")
             .performScrollToNode(hasTestTag("ipo_card_crystal-crop-protection"))
-        composeTestRule.onNodeWithText("Offer Price", useUnmergedTree = true).assertIsDisplayed()
-        composeTestRule.onNodeWithText("Lot Size", useUnmergedTree = true).assertIsDisplayed()
-        composeTestRule.onNodeWithText("Subs", useUnmergedTree = true).assertIsDisplayed()
-        composeTestRule.onNodeWithText("Exp. Premium", useUnmergedTree = true).performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("start_date_box_crystal-crop-protection").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("close_date_box_crystal-crop-protection").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithTag("gmp_value_crystal-crop-protection").performScrollTo().assertIsDisplayed()
+        composeTestRule.onNodeWithText("Offer Price", useUnmergedTree = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("Lot Size", useUnmergedTree = true).assertDoesNotExist()
+        composeTestRule.onNodeWithText("Subs", useUnmergedTree = true).performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithText("Issue Size", useUnmergedTree = true).performScrollTo().assertIsDisplayed()
         composeTestRule.onNodeWithTag("card_cta_crystal-crop-protection")
             .performScrollTo()
             .assertIsDisplayed()
 
-        // Tapping Listed switches to closed/listed IPOs
+        // Tapping Upcoming switches to future DRHP/RHP-filed IPOs
+        composeTestRule.onNodeWithTag("timeline_tab_upcoming").performClick()
+        composeTestRule.waitForIdle()
+        assertEquals(BoardTimelineTab.UPCOMING, viewModel.uiState.value.timelineTab)
+        assertTrue(viewModel.uiState.value.filteredIpos.any { it.id == "razorpay-software" })
+        assertFalse(viewModel.uiState.value.filteredIpos.any { it.id == "crystal-crop-protection" })
+
+        // Tapping Listed switches to NSE/BSE listed IPOs
         composeTestRule.onNodeWithTag("timeline_tab_listed").performClick()
         composeTestRule.waitForIdle()
         assertEquals(BoardTimelineTab.LISTED, viewModel.uiState.value.timelineTab)
         assertTrue(viewModel.uiState.value.filteredIpos.any { it.id == "ntpc-green-energy" })
         assertFalse(viewModel.uiState.value.filteredIpos.any { it.id == "crystal-crop-protection" })
 
-        // Tapping Current & Upcoming restores active IPO list
-        composeTestRule.onNodeWithTag("timeline_tab_current_upcoming").performClick()
+        // Tapping Current restores active IPO list (open + allotment phase)
+        composeTestRule.onNodeWithTag("timeline_tab_current").performClick()
         composeTestRule.waitForIdle()
-        assertEquals(BoardTimelineTab.CURRENT_UPCOMING, viewModel.uiState.value.timelineTab)
+        assertEquals(BoardTimelineTab.CURRENT, viewModel.uiState.value.timelineTab)
         assertTrue(viewModel.uiState.value.filteredIpos.any { it.id == "crystal-crop-protection" })
         db.close()
     }
@@ -2210,34 +2231,36 @@ class ExampleRobolectricTest {
                     syncedAtTime = "08:15 PM",
                 ),
             )
-            assertEquals(6, summary.excludedUnconfirmedCount)
+            assertEquals(5, summary.excludedUnconfirmedCount)
 
             val saved = repo.observeAllIpos().first()
-            assertEquals(3, saved.size)
+            assertEquals(4, saved.size)
             assertTrue(saved.any { it.companyName.contains("Crystal Crop") })
             assertTrue(saved.any { it.companyName.contains("Apex Precision") })
             assertTrue(saved.any { it.companyName.contains("Kaveri Micro") })
+            assertTrue(saved.any { it.companyName.contains("Unconfirmed Dates") })
             assertFalse(saved.any { it.companyName.contains("Solo Source") })
             assertFalse(saved.any { it.companyName.contains("Same Site Duplicate") })
             assertFalse(saved.any { it.companyName.contains("No Lot Size") })
             assertFalse(saved.any { it.companyName.contains("No Issue Size") })
-            assertFalse(saved.any { it.companyName.contains("Unconfirmed Dates") })
             assertFalse(saved.any { it.companyName.contains("Speculated Draft") })
-            assertTrue(saved.all { it.lotSize > 0 && it.issueSizeCr > 0.0 && it.priceHigh > 0 })
-            assertTrue(saved.all { it.gmpSourceLabel.startsWith("Verified •") })
+            val currentSaved = saved.filter { it.status != IpoStatus.UPCOMING }
+            assertTrue(currentSaved.all { it.lotSize > 0 && it.issueSizeCr > 0.0 && it.priceHigh > 0 })
+            assertTrue(currentSaved.all { it.gmpSourceLabel.startsWith("Verified •") })
         } finally {
             db.close()
         }
     }
 
     @Test
-    fun `amoled dark theme uses true black oled canvas opaque surfaces and high contrast white text`() {
+    fun `dark material minimalistic theme uses canonical charcoal canvas tonal surfaces and crisp off-white text`() {
         var bgColor = Color.Unspecified
         var surfaceColor = Color.Unspecified
         var onBgColor = Color.Unspecified
         var onSurfaceColor = Color.Unspecified
         var mutedColor = Color.Unspecified
-        var isAmoled = false
+        var isDark = false
+        var isAmoled = true
         var isGlass = true
         var cardAlpha = 0f
         var sheetAlpha = 0f
@@ -2252,6 +2275,7 @@ class ExampleRobolectricTest {
                 onBgColor = cs.onBackground
                 onSurfaceColor = cs.onSurface
                 mutedColor = market.mutedText
+                isDark = glass.isDark
                 isAmoled = glass.isAmoled
                 isGlass = glass.isGlass
                 cardAlpha = glass.cardFill.alpha
@@ -2260,16 +2284,18 @@ class ExampleRobolectricTest {
         }
         composeTestRule.waitForIdle()
 
-        assertTrue(isAmoled)
+        assertTrue(isDark)
+        assertFalse(isAmoled)
         assertFalse(isGlass)
-        assertEquals(Color(0xFF000000), bgColor)
-        assertEquals(Color(0xFFFFFFFF), onBgColor)
-        assertEquals(Color(0xFFFFFFFF), onSurfaceColor)
+        assertEquals(Color(0xFF121212), bgColor)
+        assertEquals(Color(0xFF1C1C1F), surfaceColor)
+        assertEquals(Color(0xFFF4F4F5), onBgColor)
+        assertEquals(Color(0xFFF4F4F5), onSurfaceColor)
         assertEquals(1f, surfaceColor.alpha, 0.001f)
         assertEquals(1f, cardAlpha, 0.001f)
         assertEquals(1f, sheetAlpha, 0.001f)
-        // Muted text stays bright and legible against pitch-black OLED surfaces
-        assertTrue(mutedColor.red > 0.65f && mutedColor.green > 0.70f && mutedColor.blue > 0.75f)
+        // Neutral muted text maintains high readability against Material Dark surfaces
+        assertTrue(mutedColor.red > 0.55f && mutedColor.green > 0.55f && mutedColor.blue > 0.60f)
     }
 
     @Test
@@ -2305,7 +2331,7 @@ class ExampleRobolectricTest {
     }
 
     @Test
-    fun `settings appearance sheet renders amoled dark and ios glass options and updates selection`() {
+    fun `settings appearance sheet renders dark minimal and ios glass options and updates selection`() {
         val selectedThemes = mutableListOf<ThemePreference>()
         composeTestRule.setContent {
             IpoPulseTheme(themePreference = ThemePreference.DARK) {
@@ -2324,7 +2350,7 @@ class ExampleRobolectricTest {
         composeTestRule.onNodeWithTag("theme_option_dark").assertIsDisplayed()
         composeTestRule.onNodeWithTag("theme_option_ios_glass").assertIsDisplayed()
 
-        composeTestRule.onNodeWithText("True black OLED").assertIsDisplayed()
+        composeTestRule.onNodeWithText("Material dark", useUnmergedTree = true).assertIsDisplayed()
         composeTestRule.onNodeWithText("iOS Glass").assertIsDisplayed()
         composeTestRule.onNodeWithText("Transparent frost").assertIsDisplayed()
 
@@ -2888,6 +2914,57 @@ class ExampleRobolectricTest {
     }
 
     @Test
+    fun `main screen compare ipos quick banner and card compare button open compare screen`() {
+        val context = ApplicationProvider.getApplicationContext<Context>()
+        val db = Room.inMemoryDatabaseBuilder(context, IpoDatabase::class.java)
+            .allowMainThreadQueries()
+            .build()
+        val repo = IpoRepository(
+            ipoDao = db.ipoDao(),
+            liveGmpRepository = LiveGmpRepository(enableNetworkFetch = false),
+        )
+        val prefs = UserPreferencesRepository(context)
+        val viewModel = IpoBoardViewModel(
+            ipoRepository = repo,
+            preferencesRepository = prefs,
+            newsRepository = IpoNewsRepository(enableNetworkFetch = false),
+        )
+
+        composeTestRule.setContent {
+            val uiState = viewModel.uiState.collectAsState().value
+            IpoPulseTheme {
+                AppNavigation(
+                    boardViewModel = viewModel,
+                    uiState = uiState,
+                    ipoRepository = repo,
+                )
+            }
+        }
+        composeTestRule.waitForIdle()
+
+        // Main screen quick Compare IPOs banner opens Compare screen directly
+        composeTestRule.onNodeWithTag("board_compare_ipos_button").assertIsDisplayed().performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("compare_ipos_screen").assertIsDisplayed()
+
+        // Navigate back to main board and launch Compare from a specific IPO card
+        composeTestRule.onNodeWithTag("compare_ipos_back_button").performClick()
+        composeTestRule.waitForIdle()
+
+        val firstVisibleIpo = viewModel.uiState.value.filteredIpos.first()
+        composeTestRule.onNodeWithTag("ipo_lazy_column")
+            .performScrollToNode(hasTestTag("ipo_card_${firstVisibleIpo.id}"))
+        composeTestRule.onNodeWithTag("compare_btn_${firstVisibleIpo.id}")
+            .performScrollTo()
+            .assertIsDisplayed()
+            .performClick()
+        composeTestRule.waitForIdle()
+        composeTestRule.onNodeWithTag("compare_ipos_screen").assertIsDisplayed()
+        composeTestRule.onNodeWithTag("compare_slot_0").assertIsDisplayed()
+        db.close()
+    }
+
+    @Test
     fun `ipo detail investor tools listed card price strip and calendar export button render cleanly`() {
         val catalog = IpoSeedData.createInitialCatalog()
         val liveIpo = catalog.first { it.status == IpoStatus.LIVE }
@@ -3016,15 +3093,10 @@ class ExampleRobolectricTest {
         }
         composeTestRule.waitForIdle()
 
-        composeTestRule.onNodeWithTag("status_chip_saved").assertIsDisplayed().performClick()
-        assertTrue(savedOnly)
-
-        composeTestRule.onNodeWithTag("board_sort_row").assertIsDisplayed()
-        composeTestRule.onNodeWithTag("sort_chip_highest_gmp").performClick()
-        assertEquals(BoardSortMode.HIGHEST_GMP, selectedSort)
-
-        composeTestRule.onNodeWithTag("toggle_card_density_btn").performClick()
-        assertTrue(compactMode)
+        composeTestRule.onNodeWithTag("status_chip_saved").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("board_sort_row").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("sort_chip_highest_gmp").assertDoesNotExist()
+        composeTestRule.onNodeWithTag("toggle_card_density_btn").assertDoesNotExist()
 
         composeTestRule.onNodeWithTag("bookmark_btn_${firstIpo.id}", useUnmergedTree = true).performClick()
         assertEquals(firstIpo.id, toggledBookmarkId)

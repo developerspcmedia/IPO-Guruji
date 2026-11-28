@@ -4,7 +4,7 @@ import java.text.NumberFormat
 import java.util.Locale
 import kotlin.math.abs
 
-private val indianLocale = Locale("en", "IN")
+private val indianLocale: Locale = Locale.forLanguageTag("en-IN")
 
 fun formatRupees(amount: Int): String {
     val formatter = NumberFormat.getNumberInstance(indianLocale)

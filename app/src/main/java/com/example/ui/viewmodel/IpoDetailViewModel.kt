@@ -1,14 +1,19 @@
 package com.example.ui.viewmodel
 
+import android.util.Log
 import androidx.lifecycle.ViewModel
 import androidx.lifecycle.ViewModelProvider
 import androidx.lifecycle.viewModelScope
+import com.example.ai.IpoAiRepository
 import com.example.data.local.IpoSeedData
+import com.example.data.model.IpoDateUtils
 import com.example.data.model.IpoEntity
 import com.example.data.model.IpoStatus
 import com.example.data.repository.IpoRepository
 import com.example.data.repository.LiveSubscriptionRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
+import kotlinx.coroutines.TimeoutCancellationException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -19,6 +24,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeout
 
 enum class DetailTab(val label: String) {
     ALL("All"),
@@ -37,12 +43,22 @@ data class SubscriptionSyncUiState(
     val lastSyncedLabel: String? = null,
     val sourceLabel: String? = null,
     val statusMessage: String? = null,
+    val sourceStatusesLabel: String? = null,
     val isAutoPollingActive: Boolean = false,
 )
+
+sealed interface IpoAiUiState {
+    data object Idle : IpoAiUiState
+    data object Loading : IpoAiUiState
+    data class Streaming(val text: String, val activePrompt: String) : IpoAiUiState
+    data class Success(val text: String, val activePrompt: String) : IpoAiUiState
+    data class Error(val message: String, val activePrompt: String) : IpoAiUiState
+}
 
 class IpoDetailViewModel(
     private val ipoId: String,
     private val ipoRepository: IpoRepository,
+    private val ipoAiRepository: IpoAiRepository = IpoAiRepository(),
 ) : ViewModel() {
 
     private val seedFallback: IpoEntity? = IpoSeedData.createInitialCatalog()
@@ -78,8 +94,15 @@ class IpoDetailViewModel(
     private val _subscriptionSyncState = MutableStateFlow(SubscriptionSyncUiState())
     val subscriptionSyncState: StateFlow<SubscriptionSyncUiState> = _subscriptionSyncState.asStateFlow()
 
+    private val _aiState = MutableStateFlow<IpoAiUiState>(IpoAiUiState.Idle)
+    val aiState: StateFlow<IpoAiUiState> = _aiState.asStateFlow()
+
     private var hasAutoRefreshedOnOpen = false
+    private var lastSuccessfulSyncedLabel: String? = null
+    private var latestObservedIpo: IpoEntity? = null
+    private var currentPollIntervalMs: Long? = null
     private var marketHoursPollJob: Job? = null
+    private var aiGenerationJob: Job? = null
 
     fun selectTab(tab: DetailTab) {
         _selectedTab.value = tab
@@ -93,28 +116,66 @@ class IpoDetailViewModel(
 
     /**
      * Hybrid Live Subscription trigger on IPO Detail screen entry:
-     * 1. Immediately refreshes live category-wise subscription if cache is stale (> 2 min) or missing breakdown.
-     * 2. If the IPO is currently LIVE during NSE/BSE bidding hours (10:00 AM – 5:15 PM IST), starts a
-     *    lightweight 75-second auto-poll loop that cleans up automatically when leaving the screen.
+     * 1. Uses calendar dates (IpoDateUtils.isBiddingOpenToday / closeDate) rather than stored status.
+     * 2. Immediately refreshes live subscription if cache is stale, missing breakdown, or next-morning
+     *    (~9:30 AM IST) catch-up is due after the close day.
+     * 3. Polls every 75s during weekday market hours (10:00 AM–5:15 PM IST) when bidding is open today,
+     *    and every 10 min on close day until 9:00 PM IST. Stops on weekends and on screen exit.
      */
-    fun onDetailScreenVisible(currentIpo: IpoEntity) {
+    fun onDetailScreenVisible(
+        currentIpo: IpoEntity,
+        nowMs: Long = System.currentTimeMillis(),
+    ) {
+        latestObservedIpo = currentIpo
+        if (lastSuccessfulSyncedLabel == null && currentIpo.subscriptionUpdatedAtMs > 0L) {
+            lastSuccessfulSyncedLabel = LiveSubscriptionRepository.formatTimeLabel(currentIpo.subscriptionUpdatedAtMs)
+        }
+
+        val isOpenToday = IpoDateUtils.isBiddingOpenToday(
+            openDate = currentIpo.openDate,
+            closeDate = currentIpo.closeDate,
+            listingDate = currentIpo.listingDate,
+            status = currentIpo.status,
+            referenceTimeMs = nowMs,
+        )
+        val isClosingToday = LiveSubscriptionRepository.isClosingTodayIst(currentIpo.closeDate, nowMs)
+        val needsNextMorningCatchup = LiveSubscriptionRepository.shouldRunNextMorningCatchup(
+            closeDate = currentIpo.closeDate,
+            subscriptionUpdatedAtMs = currentIpo.subscriptionUpdatedAtMs,
+            nowMs = nowMs,
+        )
+
         if (!hasAutoRefreshedOnOpen) {
             hasAutoRefreshedOnOpen = true
-            val missingBreakdown = currentIpo.status == IpoStatus.LIVE &&
-                currentIpo.qibSubX <= 0.0 && currentIpo.retailSubX <= 0.0
-            val shouldAutoFetch = currentIpo.status == IpoStatus.LIVE ||
+            val needsDetailEnrichment = currentIpo.dailySubscriptions.size < 2 ||
+                !currentIpo.hasLiveApplicationCounts ||
+                (currentIpo.qibSubX <= 0.0 && currentIpo.retailSubX <= 0.0)
+            val shouldAutoFetch = isOpenToday ||
+                isClosingToday ||
+                needsNextMorningCatchup ||
                 currentIpo.status == IpoStatus.PRE_APPLY ||
-                missingBreakdown
-            if (shouldAutoFetch && (ipoRepository.isSubscriptionCacheStale() || missingBreakdown)) {
-                refreshLiveSubscription(force = false, silentStatusOnNoChange = true)
+                currentIpo.status == IpoStatus.CLOSED
+            if (shouldAutoFetch && (needsNextMorningCatchup || ipoRepository.isSubscriptionCacheStale() || needsDetailEnrichment)) {
+                refreshLiveSubscription(force = true, silentStatusOnNoChange = true)
             }
         }
 
-        if (currentIpo.status == IpoStatus.LIVE && LiveSubscriptionRepository.isMarketHoursIst()) {
-            startMarketHoursAutoPoll()
+        val pollIntervalMs = LiveSubscriptionRepository.resolveDetailPollIntervalMs(
+            openDate = currentIpo.openDate,
+            closeDate = currentIpo.closeDate,
+            listingDate = currentIpo.listingDate,
+            status = currentIpo.status,
+            nowMs = nowMs,
+        )
+        if (pollIntervalMs != null) {
+            startMarketHoursAutoPoll(pollIntervalMs)
         } else {
             stopMarketHoursAutoPoll()
         }
+    }
+
+    fun onDetailScreenHidden() {
+        stopMarketHoursAutoPoll()
     }
 
     fun refreshLiveSubscription(
@@ -127,26 +188,51 @@ class IpoDetailViewModel(
             runCatching {
                 ipoRepository.refreshLiveSubscriptionForIpo(ipoId = ipoId, force = force)
             }.onSuccess { result ->
-                _subscriptionSyncState.update { current ->
-                    current.copy(
-                        isRefreshing = false,
-                        lastSyncedLabel = result.syncedAtLabel,
-                        sourceLabel = result.sourceLabel,
-                        statusMessage = if (silentStatusOnNoChange && !result.updated) {
-                            current.statusMessage
-                        } else {
-                            result.statusMessage
-                        },
-                    )
+                val sourcesLine = LiveSubscriptionRepository.formatSourceStatuses(result.sourceStatuses)
+                if (result.hasLiveSourceData && result.syncedAtLabel.isNotBlank()) {
+                    lastSuccessfulSyncedLabel = result.syncedAtLabel
+                    _subscriptionSyncState.update { current ->
+                        current.copy(
+                            isRefreshing = false,
+                            lastSyncedLabel = result.syncedAtLabel,
+                            sourceLabel = result.sourceLabel,
+                            sourceStatusesLabel = sourcesLine ?: current.sourceStatusesLabel,
+                            statusMessage = if (silentStatusOnNoChange && !result.updated) {
+                                current.statusMessage
+                            } else {
+                                result.statusMessage
+                            },
+                        )
+                    }
+                } else {
+                    val failureMessage = lastSuccessfulSyncedLabel?.let {
+                        "Last updated $it (couldn't refresh now)"
+                    } ?: "Couldn't refresh now"
+                    _subscriptionSyncState.update { current ->
+                        current.copy(
+                            isRefreshing = false,
+                            lastSyncedLabel = lastSuccessfulSyncedLabel ?: current.lastSyncedLabel,
+                            sourceStatusesLabel = sourcesLine ?: current.sourceStatusesLabel,
+                            statusMessage = if (silentStatusOnNoChange) {
+                                current.statusMessage
+                            } else {
+                                failureMessage
+                            },
+                        )
+                    }
                 }
             }.onFailure {
+                val failureMessage = lastSuccessfulSyncedLabel?.let {
+                    "Last updated $it (couldn't refresh now)"
+                } ?: "Couldn't refresh now"
                 _subscriptionSyncState.update { current ->
                     current.copy(
                         isRefreshing = false,
+                        lastSyncedLabel = lastSuccessfulSyncedLabel ?: current.lastSyncedLabel,
                         statusMessage = if (silentStatusOnNoChange) {
                             current.statusMessage
                         } else {
-                            "Unable to reach live exchange feeds right now. Tap Verify on NSE/BSE."
+                            failureMessage
                         },
                     )
                 }
@@ -154,16 +240,31 @@ class IpoDetailViewModel(
         }
     }
 
-    private fun startMarketHoursAutoPoll() {
-        if (marketHoursPollJob?.isActive == true) return
+    private fun startMarketHoursAutoPoll(intervalMs: Long) {
+        if (marketHoursPollJob?.isActive == true && currentPollIntervalMs == intervalMs) return
+        marketHoursPollJob?.cancel()
+        currentPollIntervalMs = intervalMs
         _subscriptionSyncState.update { it.copy(isAutoPollingActive = true) }
         marketHoursPollJob = viewModelScope.launch {
+            var activeIntervalMs = intervalMs
             while (isActive) {
-                delay(LiveSubscriptionRepository.MARKET_POLL_INTERVAL_MS)
-                if (!LiveSubscriptionRepository.isMarketHoursIst()) {
+                delay(activeIntervalMs)
+                val targetIpo = latestObservedIpo ?: ipo.value
+                val nextIntervalMs = targetIpo?.let {
+                    LiveSubscriptionRepository.resolveDetailPollIntervalMs(
+                        openDate = it.openDate,
+                        closeDate = it.closeDate,
+                        listingDate = it.listingDate,
+                        status = it.status,
+                    )
+                }
+                if (nextIntervalMs == null) {
+                    currentPollIntervalMs = null
                     _subscriptionSyncState.update { it.copy(isAutoPollingActive = false) }
                     break
                 }
+                activeIntervalMs = nextIntervalMs
+                currentPollIntervalMs = nextIntervalMs
                 refreshLiveSubscription(force = true, silentStatusOnNoChange = true)
             }
         }
@@ -172,13 +273,72 @@ class IpoDetailViewModel(
     private fun stopMarketHoursAutoPoll() {
         marketHoursPollJob?.cancel()
         marketHoursPollJob = null
+        currentPollIntervalMs = null
         if (_subscriptionSyncState.value.isAutoPollingActive) {
             _subscriptionSyncState.update { it.copy(isAutoPollingActive = false) }
         }
     }
 
+    fun askIpoAi(
+        currentIpo: IpoEntity,
+        question: String? = null,
+    ) {
+        val activePrompt = question?.trim().orEmpty()
+        aiGenerationJob?.cancel()
+        aiGenerationJob = viewModelScope.launch {
+            _aiState.value = IpoAiUiState.Loading
+            val accumulatedText = StringBuilder()
+            try {
+                withTimeout(AI_GENERATION_TIMEOUT_MS) {
+                    ipoAiRepository.streamIpoAnalysis(
+                        ipo = currentIpo,
+                        userQuestion = activePrompt.ifBlank { null },
+                    ).collect { chunkText ->
+                        accumulatedText.append(chunkText)
+                        _aiState.value = IpoAiUiState.Streaming(
+                            text = accumulatedText.toString(),
+                            activePrompt = activePrompt,
+                        )
+                    }
+                }
+                if (accumulatedText.isNotBlank()) {
+                    _aiState.value = IpoAiUiState.Success(
+                        text = accumulatedText.toString().trim(),
+                        activePrompt = activePrompt,
+                    )
+                } else {
+                    _aiState.value = IpoAiUiState.Error(
+                        message = "Model returned an empty response. Please try again.",
+                        activePrompt = activePrompt,
+                    )
+                }
+            } catch (e: TimeoutCancellationException) {
+                Log.e(AI_TAG, "Gemini IPO analysis timed out", e)
+                _aiState.value = IpoAiUiState.Error(
+                    message = "Analysis timed out after 60 seconds. Please try again.",
+                    activePrompt = activePrompt,
+                )
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Exception) {
+                Log.e(AI_TAG, "Firebase AI generation failed for ${currentIpo.companyName}", e)
+                _aiState.value = IpoAiUiState.Error(
+                    message = e.localizedMessage ?: "Unable to generate AI insight right now.",
+                    activePrompt = activePrompt,
+                )
+            }
+        }
+    }
+
+    fun clearAiResponse() {
+        aiGenerationJob?.cancel()
+        aiGenerationJob = null
+        _aiState.value = IpoAiUiState.Idle
+    }
+
     override fun onCleared() {
         stopMarketHoursAutoPoll()
+        aiGenerationJob?.cancel()
         super.onCleared()
     }
 
@@ -190,5 +350,10 @@ class IpoDetailViewModel(
         override fun <T : ViewModel> create(modelClass: Class<T>): T {
             return IpoDetailViewModel(ipoId, ipoRepository) as T
         }
+    }
+
+    companion object {
+        private const val AI_TAG = "IpoDetailAiVM"
+        private const val AI_GENERATION_TIMEOUT_MS = 60_000L
     }
 }

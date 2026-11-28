@@ -59,12 +59,20 @@ import kotlin.math.roundToInt
 @Composable
 fun NativeAdSlot(
     modifier: Modifier = Modifier,
+    placement: NativeAdPlacement = NativeAdPlacement.PRIMARY,
     topPaddingDp: Int = 0,
     onAdImpression: () -> Unit = {},
+    slotTag: String = "native_ad_slot",
 ) {
+    val canRequestAds by ConsentManager.canRequestAds.collectAsStateWithLifecycle()
+    if (!canRequestAds) {
+        return
+    }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val nativeUnitId = remember(context) { AdMobManager.resolveNativeUnitId(context) }
+    val nativeUnitId = remember(context, placement) {
+        AdMobManager.resolveNativeUnitId(context = context, placement = placement)
+    }
     val sdkInitialized by AdMobManager.sdkInitialized.collectAsStateWithLifecycle()
 
     val colorScheme = MaterialTheme.colorScheme
@@ -178,7 +186,7 @@ fun NativeAdSlot(
         exit = shrinkVertically() + fadeOut(),
         modifier = modifier
             .fillMaxWidth()
-            .testTag("native_ad_slot"),
+            .testTag(slotTag),
     ) {
         if (loadedAd != null) {
             val surfaceColor = colorScheme.surface.toArgb()
@@ -225,15 +233,22 @@ fun NativeAdSlot(
 @Composable
 internal fun CompactNativeBannerSlot(
     modifier: Modifier = Modifier,
+    placement: NativeAdPlacement = NativeAdPlacement.PRIMARY,
     onAdImpression: () -> Unit = {},
     topPaddingWhenLoadedDp: Int = 0,
     roundedCardStyle: Boolean = false,
     slotTag: String = "ad_banner_slot",
     containerTag: String = "ad_banner_container",
 ) {
+    val canRequestAds by ConsentManager.canRequestAds.collectAsStateWithLifecycle()
+    if (!canRequestAds) {
+        return
+    }
     val context = LocalContext.current
     val lifecycleOwner = LocalLifecycleOwner.current
-    val nativeUnitId = remember(context) { AdMobManager.resolveNativeUnitId(context) }
+    val nativeUnitId = remember(context, placement) {
+        AdMobManager.resolveNativeUnitId(context = context, placement = placement)
+    }
     val sdkInitialized by AdMobManager.sdkInitialized.collectAsStateWithLifecycle()
 
     val colorScheme = MaterialTheme.colorScheme

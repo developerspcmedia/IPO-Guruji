@@ -7,8 +7,10 @@ import com.example.data.model.IpoDateUtils
 import com.example.data.model.IpoEntity
 import com.example.data.model.PanPrivacyUtils
 import com.example.data.model.PrivateUserProfileEntity
+import com.example.security.CryptoBox
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.withContext
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -287,11 +289,13 @@ class AllotmentRepository(
     private val allotmentDao: AllotmentDao,
     private val checker: RegistrarAllotmentChecker = DirectRegistrarAllotmentChecker(),
 ) {
-    fun observeProfiles(): Flow<List<PrivateUserProfileEntity>> = allotmentDao.observeProfiles()
+    fun observeProfiles(): Flow<List<PrivateUserProfileEntity>> =
+        allotmentDao.observeProfiles().map { list -> list.map(::decryptProfile) }
 
     fun observeWatches(): Flow<List<AllotmentWatchEntity>> = allotmentDao.observeWatches()
 
-    suspend fun getAllProfiles(): List<PrivateUserProfileEntity> = allotmentDao.getAllProfiles()
+    suspend fun getAllProfiles(): List<PrivateUserProfileEntity> =
+        allotmentDao.getAllProfiles().map(::decryptProfile)
 
     suspend fun getAllWatches(): List<AllotmentWatchEntity> = allotmentDao.getAllWatches()
 
@@ -317,7 +321,7 @@ class AllotmentRepository(
             return Result.failure(IllegalArgumentException("Enter a valid 10-character PAN (e.g., ABCDE1234F)."))
         }
 
-        val existingProfiles = allotmentDao.getAllProfiles()
+        val existingProfiles = getAllProfiles()
         val duplicatePan = existingProfiles.firstOrNull {
             it.panNumber.equals(cleanPan, ignoreCase = true) && it.id != existingId
         }
@@ -327,7 +331,7 @@ class AllotmentRepository(
 
         val profileId = existingId ?: UUID.randomUUID().toString()
         val existing = existingId?.let { allotmentDao.getProfileById(it) }
-        val entity = PrivateUserProfileEntity(
+        val plaintextEntity = PrivateUserProfileEntity(
             id = profileId,
             displayName = cleanName,
             panNumber = cleanPan,
@@ -336,7 +340,7 @@ class AllotmentRepository(
             isDefault = existing?.isDefault ?: existingProfiles.isEmpty(),
             createdAtMs = existing?.createdAtMs ?: System.currentTimeMillis(),
         )
-        allotmentDao.upsertProfile(entity)
+        allotmentDao.upsertProfile(encryptProfile(plaintextEntity))
 
         // Sync display name & masked PAN on existing watches belonging to this profile
         allotmentDao.getAllWatches()
@@ -344,13 +348,13 @@ class AllotmentRepository(
             .forEach { watch ->
                 allotmentDao.updateWatch(
                     watch.copy(
-                        profileName = entity.displayName,
-                        maskedPan = entity.maskedPan,
+                        profileName = plaintextEntity.displayName,
+                        maskedPan = plaintextEntity.maskedPan,
                     ),
                 )
             }
 
-        return Result.success(entity)
+        return Result.success(plaintextEntity)
     }
 
     suspend fun deleteProfile(profileId: String) {
@@ -370,7 +374,7 @@ class AllotmentRepository(
         val created = mutableListOf<AllotmentWatchEntity>()
         val now = System.currentTimeMillis()
         for (profileId in profileIds) {
-            val profile = allotmentDao.getProfileById(profileId) ?: continue
+            val profile = allotmentDao.getProfileById(profileId)?.let(::decryptProfile) ?: continue
             val existing = allotmentDao.findWatchForProfileAndIpo(profile.id, ipo.id)
             val watch = AllotmentWatchEntity(
                 id = existing?.id ?: UUID.randomUUID().toString(),
@@ -415,14 +419,14 @@ class AllotmentRepository(
         referenceTimeMs: Long = System.currentTimeMillis(),
     ): AllotmentCheckEvent? {
         val watch = allotmentDao.getWatchById(watchId) ?: return null
-        val profile = allotmentDao.getProfileById(watch.profileId) ?: return null
+        val profile = allotmentDao.getProfileById(watch.profileId)?.let(::decryptProfile) ?: return null
         return evaluateAndPersistWatch(watch, profile, referenceTimeMs)
     }
 
     suspend fun checkAllPendingWatches(
         referenceTimeMs: Long = System.currentTimeMillis(),
     ): AllotmentBatchCheckResult {
-        val profilesById = allotmentDao.getAllProfiles().associateBy { it.id }
+        val profilesById = getAllProfiles().associateBy { it.id }
         val watches = allotmentDao.getAllWatches()
             .filter {
                 it.status == AllotmentWatchStatus.PENDING || it.status == AllotmentWatchStatus.RESULT_LIVE
@@ -520,6 +524,25 @@ class AllotmentRepository(
             shouldNotifyAllotted = notifyAllotted,
             shouldNotifyNotAllotted = notifyNotAllotted,
         )
+    }
+
+    private fun encryptProfile(profile: PrivateUserProfileEntity): PrivateUserProfileEntity =
+        profile.copy(
+            panNumber = CryptoBox.encrypt(profile.panNumber),
+            dematId = CryptoBox.encrypt(profile.dematId),
+            upiHandle = CryptoBox.encrypt(profile.upiHandle),
+        )
+
+    private fun decryptProfile(profile: PrivateUserProfileEntity): PrivateUserProfileEntity =
+        profile.copy(
+            panNumber = decryptField(profile.panNumber),
+            dematId = decryptField(profile.dematId),
+            upiHandle = decryptField(profile.upiHandle),
+        )
+
+    private fun decryptField(stored: String): String {
+        if (stored.isEmpty()) return ""
+        return runCatching { CryptoBox.decrypt(stored) }.getOrDefault("")
     }
 
     companion object {

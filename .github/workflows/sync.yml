@@ -1,0 +1,55 @@
+name: IPO Data Sync
+
+on:
+  schedule:
+    # Runs every 20 minutes between 02:00 and 16:59 UTC (~07:30 to 22:29 IST)
+    - cron: "*/20 2-16 * * *"
+  workflow_dispatch:
+    inputs:
+      run_mode:
+        description: "Sync mode (all uses IST schedule rules)"
+        required: false
+        default: "all"
+        type: choice
+        options:
+          - all
+          - catalog
+          - gmp
+          - subscription
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ipo-data-sync
+  cancel-in-progress: false
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    defaults:
+      run:
+        working-directory: ipo-data-sync
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Node.js 20
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+          cache-dependency-path: ipo-data-sync/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Run IPO data sync
+        env:
+          FIREBASE_SERVICE_ACCOUNT: ${{ secrets.FIREBASE_SERVICE_ACCOUNT }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
+          GEMINI_MODEL: ${{ vars.GEMINI_MODEL || 'gemini-2.5-flash' }}
+          RUN_MODE: ${{ inputs.run_mode || 'all' }}
+        run: npm run sync

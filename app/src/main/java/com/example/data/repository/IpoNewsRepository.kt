@@ -48,16 +48,37 @@ class IpoNewsRepository(
             name = "Google News India IPO",
             url = "https://news.google.com/rss/search?q=India+IPO+OR+GMP+OR+SME+IPO+SEBI&hl=en-IN&gl=IN&ceid=IN:en",
             requireIpoKeyword = false,
+            isUsFeed = false,
         ),
         FeedSource(
             name = "Economic Times IPO",
             url = "https://economictimes.indiatimes.com/markets/ipos/fpos/rssfeeds/14655708.cms",
             requireIpoKeyword = false,
+            isUsFeed = false,
         ),
         FeedSource(
             name = "LiveMint Markets",
             url = "https://www.livemint.com/rss/markets",
             requireIpoKeyword = true,
+            isUsFeed = false,
+        ),
+        FeedSource(
+            name = "Google News USA IPOs",
+            url = "https://news.google.com/rss/search?q=(NASDAQ+OR+NYSE+OR+%22Wall+Street%22)+IPO+upcoming+OR+priced+OR+%22S-1%22&hl=en-US&gl=US&ceid=US:en",
+            requireIpoKeyword = true,
+            isUsFeed = true,
+        ),
+        FeedSource(
+            name = "US Markets IPO Desk",
+            url = "https://news.google.com/rss/search?q=US+IPO+filing+S-1+OR+F-1+site:reuters.com+OR+site:cnbc.com+OR+site:marketwatch.com+OR+site:nasdaq.com+OR+site:barrons.com&hl=en-US&gl=US&ceid=US:en",
+            requireIpoKeyword = true,
+            isUsFeed = true,
+        ),
+        FeedSource(
+            name = "GlobeNewswire US IPOs",
+            url = "https://www.globenewswire.com/RssFeed/subjectcode/20-Initial%20Public%20Offerings/feedTitle/GlobeNewswire%20-%20Initial%20Public%20Offerings",
+            requireIpoKeyword = true,
+            isUsFeed = true,
         ),
     )
 
@@ -70,12 +91,12 @@ class IpoNewsRepository(
                 return@withContext NewsRefreshResult(
                     articles = curated,
                     liveSourceCount = 0,
-                    activeSourceNames = listOf("Chittorgarh", "ET IPO", "LiveMint", "SEBI"),
+                    activeSourceNames = listOf("ET IPO", "LiveMint", "Nasdaq", "SEC EDGAR"),
                     syncedAtLabel = "Synced $syncTime",
                 )
             }
 
-            val liveResults = withTimeoutOrNull(7_000L) {
+            val liveResults = withTimeoutOrNull(8_000L) {
                 coroutineScope {
                     feedSources.map { feed ->
                         async {
@@ -88,29 +109,43 @@ class IpoNewsRepository(
             }.orEmpty()
 
             val activeSources = mutableListOf<String>()
-            val liveArticles = mutableListOf<IpoNewsArticle>()
+            val liveIndiaArticles = mutableListOf<IpoNewsArticle>()
+            val liveUsaArticles = mutableListOf<IpoNewsArticle>()
             liveResults.forEachIndexed { idx, items ->
                 if (items.isNotEmpty()) {
                     activeSources.add(feedSources[idx].name)
-                    liveArticles.addAll(items)
+                    if (feedSources[idx].isUsFeed) {
+                        liveUsaArticles.addAll(items)
+                    } else {
+                        liveIndiaArticles.addAll(items)
+                    }
                 }
+            }
+
+            // Interleave India and USA live IPO headlines so both markets appear fresh at the top
+            val interleavedLive = mutableListOf<IpoNewsArticle>()
+            val indiaPool = liveIndiaArticles.take(10)
+            val usaPool = liveUsaArticles.take(10)
+            val maxPairs = maxOf(indiaPool.size, usaPool.size)
+            for (i in 0 until maxPairs) {
+                if (i < indiaPool.size) interleavedLive.add(indiaPool[i])
+                if (i < usaPool.size) interleavedLive.add(usaPool[i])
             }
 
             val seenTitles = HashSet<String>()
             val merged = buildList {
-                // Prioritize live-fetched articles first
-                liveArticles.take(12).forEachIndexed { idx, item ->
+                interleavedLive.forEachIndexed { idx, item ->
                     val normalizedKey = item.title.lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "").take(48)
                     if (seenTitles.add(normalizedKey)) {
                         add(item.copy(isFeatured = idx == 0))
                     }
                 }
-                // Fill / append curated latest briefs so every IPO category has deep analysis
+                // Fill / append curated latest briefs so every IPO category (India & USA) has deep analysis
                 curated.forEach { fallback ->
                     val normalizedKey = fallback.title.lowercase(Locale.US).replace(Regex("[^a-z0-9]"), "").take(48)
                     if (seenTitles.add(normalizedKey)) {
                         add(
-                            if (liveArticles.isNotEmpty()) {
+                            if (interleavedLive.isNotEmpty()) {
                                 fallback.copy(isFeatured = false)
                             } else {
                                 fallback
@@ -123,12 +158,12 @@ class IpoNewsRepository(
             val sourceNames = if (activeSources.isNotEmpty()) {
                 activeSources
             } else {
-                listOf("ET IPO", "LiveMint", "Moneycontrol", "SEBI")
+                listOf("ET IPO", "LiveMint", "Nasdaq", "SEC EDGAR")
             }
 
             NewsRefreshResult(
                 articles = merged,
-                liveSourceCount = liveArticles.size,
+                liveSourceCount = interleavedLive.size,
                 activeSourceNames = sourceNames,
                 syncedAtLabel = "Synced $syncTime",
             )
@@ -147,7 +182,13 @@ class IpoNewsRepository(
         }
         if (body.isBlank()) return emptyList()
 
-        return parseRssXml(xml = body, defaultSource = feed.name, requireIpoKeyword = feed.requireIpoKeyword, catalog = catalog)
+        return parseRssXml(
+            xml = body,
+            defaultSource = feed.name,
+            requireIpoKeyword = feed.requireIpoKeyword,
+            catalog = catalog,
+            isUsFeed = feed.isUsFeed,
+        )
     }
 
     internal fun parseRssXml(
@@ -155,6 +196,7 @@ class IpoNewsRepository(
         defaultSource: String,
         requireIpoKeyword: Boolean,
         catalog: List<IpoEntity>,
+        isUsFeed: Boolean = false,
     ): List<IpoNewsArticle> {
         val parser = Xml.newPullParser().apply {
             setFeature(XmlPullParser.FEATURE_PROCESS_NAMESPACES, false)
@@ -202,6 +244,7 @@ class IpoNewsRepository(
                             requireIpoKeyword = requireIpoKeyword,
                             catalog = catalog,
                             index = items.size,
+                            isUsFeed = isUsFeed,
                         )
                         if (cleaned != null) {
                             items.add(cleaned)
@@ -235,6 +278,7 @@ class IpoNewsRepository(
         requireIpoKeyword: Boolean,
         catalog: List<IpoEntity>,
         index: Int,
+        isUsFeed: Boolean = false,
     ): IpoNewsArticle? {
         val decodedTitle = cleanText(rawTitle)
         if (decodedTitle.length < 12) return null
@@ -246,7 +290,7 @@ class IpoNewsRepository(
         } else {
             decodedTitle
         }
-        val finalSource = if (rawSource.startsWith("Google News") && titleParts.size >= 2) {
+        val finalSource = if ((rawSource.startsWith("Google News") || rawSource == "US Markets IPO Desk") && titleParts.size >= 2) {
             titleParts.last().trim()
         } else {
             rawSource
@@ -255,24 +299,42 @@ class IpoNewsRepository(
         val cleanedDesc = cleanText(rawDescription)
             .removePrefix(finalTitle)
             .trim()
-            .ifBlank { "Latest IPO & primary market update reported by $finalSource." }
+            .ifBlank {
+                if (isUsFeed) {
+                    "Latest USA IPO & Wall Street primary market update reported by $finalSource."
+                } else {
+                    "Latest IPO & primary market update reported by $finalSource."
+                }
+            }
 
         val combinedLower = "${finalTitle.lowercase(Locale.US)} ${cleanedDesc.lowercase(Locale.US)}"
-        if (requireIpoKeyword && !listOf("ipo", "gmp", "drhp", "rhp", "sebi", "allotment", "listing", "sme").any {
-                combinedLower.contains(it)
-            }
-        ) {
+        val ipoKeywords = listOf(
+            "ipo", "initial public offering", "gmp", "drhp", "rhp", "sebi",
+            "allotment", "listing", "sme", "s-1", "f-1", "nasdaq", "nyse", "debut",
+        )
+        if (requireIpoKeyword && !ipoKeywords.any { combinedLower.contains(it) }) {
             return null
         }
 
-        val matchedIpo = catalog.firstOrNull { ipo ->
-            val shortLower = ipo.shortCode.lowercase(Locale.US)
-            val firstWord = ipo.companyName.substringBefore(" ").lowercase(Locale.US)
-            (shortLower.length >= 4 && combinedLower.contains(shortLower)) ||
-                (firstWord.length >= 4 && combinedLower.contains(firstWord))
+        val hasIndiaSignals = listOf("sebi", "drhp", "bse", "nse", "crore", "₹", "rupee", "india", "mumbai", "dalal street")
+            .any { combinedLower.contains(it) }
+        val hasUsSignals = listOf("nasdaq", "nyse", "sec ", "form s-1", "s-1", "form f-1", "wall street", "u.s. ipo", "us ipo", "american ipo")
+            .any { combinedLower.contains(it) }
+        val isUsArticle = (isUsFeed && !hasIndiaSignals) || (hasUsSignals && !hasIndiaSignals)
+
+        val matchedIpo = if (isUsArticle) {
+            null
+        } else {
+            catalog.firstOrNull { ipo ->
+                val shortLower = ipo.shortCode.lowercase(Locale.US)
+                val firstWord = ipo.companyName.substringBefore(" ").lowercase(Locale.US)
+                (shortLower.length >= 4 && combinedLower.contains(shortLower)) ||
+                    (firstWord.length >= 4 && combinedLower.contains(firstWord))
+            }
         }
 
         val category = when {
+            isUsArticle -> NewsCategory.USA_IPOS
             combinedLower.contains("sme") -> NewsCategory.SME_BUZZ
             combinedLower.contains("sebi") || combinedLower.contains("drhp") || combinedLower.contains("rhp") ->
                 NewsCategory.SEBI_FILINGS
@@ -282,7 +344,7 @@ class IpoNewsRepository(
         }
 
         return IpoNewsArticle(
-            id = "live_${finalTitle.hashCode()}_$index",
+            id = if (isUsArticle) "live_us_${finalTitle.hashCode()}_$index" else "live_${finalTitle.hashCode()}_$index",
             title = finalTitle,
             summary = cleanedDesc.take(200),
             fullBody = listOf(
@@ -294,13 +356,19 @@ class IpoNewsRepository(
             publishedAgo = formatRelativePubDate(rawPubDate),
             readTimeMinutes = 2,
             linkedIpoId = matchedIpo?.id,
-            linkedIpoName = matchedIpo?.companyName,
-            linkedShortCode = matchedIpo?.shortCode ?: "IPO",
+            linkedIpoName = matchedIpo?.companyName ?: if (isUsArticle) "USA IPOs" else null,
+            linkedShortCode = matchedIpo?.shortCode ?: if (isUsArticle) "USA" else "IPO",
             linkedBoardType = matchedIpo?.boardType ?: if (category == NewsCategory.SME_BUZZ) BoardType.SME else BoardType.MAINBOARD,
-            logoUrl = matchedIpo?.logoUrl
-                ?: "https://commons.wikimedia.org/wiki/Special:FilePath/Bombay_Stock_Exchange_logo.svg",
-            imageUrl = matchedIpo?.bannerImageUrl
-                ?: "https://commons.wikimedia.org/wiki/Special:FilePath/Bombay_Stock_Exchange.jpg?width=900",
+            logoUrl = matchedIpo?.logoUrl ?: if (isUsArticle) {
+                "https://www.google.com/s2/favicons?domain=nasdaq.com&sz=128"
+            } else {
+                "https://commons.wikimedia.org/wiki/Special:FilePath/Bombay_Stock_Exchange_logo.svg"
+            },
+            imageUrl = matchedIpo?.bannerImageUrl ?: if (isUsArticle) {
+                "https://commons.wikimedia.org/wiki/Special:FilePath/New_York_Stock_Exchange_1.jpg?width=900"
+            } else {
+                "https://commons.wikimedia.org/wiki/Special:FilePath/Bombay_Stock_Exchange.jpg?width=900"
+            },
             articleUrl = rawLink.trim(),
         )
     }
@@ -340,5 +408,6 @@ class IpoNewsRepository(
         val name: String,
         val url: String,
         val requireIpoKeyword: Boolean,
+        val isUsFeed: Boolean = false,
     )
 }

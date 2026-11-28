@@ -57,6 +57,10 @@ import com.example.ui.components.formatRupees
 import com.example.ui.components.formatRupeesSigned
 import com.example.ui.components.formatSubX
 import com.example.ui.components.glassBorderStroke
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.ads.ConsentManager
+import com.example.ads.NativeAdPlacement
+import com.example.ads.NativeAdSlot
 import com.example.ui.theme.LocalGlassStyle
 import com.example.ui.theme.LocalMarketColors
 import com.example.ui.theme.MonoNumericStyle
@@ -83,10 +87,12 @@ fun CompareIposScreen(
     initialIpoId: String? = null,
     onIpoClick: (String) -> Unit,
     onBack: () -> Unit,
+    onAdImpression: () -> Unit = {},
     modifier: Modifier = Modifier,
 ) {
     val marketColors = LocalMarketColors.current
     val glass = LocalGlassStyle.current
+    val canRequestAds by ConsentManager.canRequestAds.collectAsStateWithLifecycle()
 
     val initialSelection = remember(allIpos, initialIpoId) {
         val ordered = mutableListOf<String>()
@@ -402,6 +408,16 @@ fun CompareIposScreen(
                                 )
                             }
                         }
+                    }
+                }
+
+                if (canRequestAds) {
+                    item(key = "compare_native_ad_2") {
+                        NativeAdSlot(
+                            placement = NativeAdPlacement.SECONDARY,
+                            onAdImpression = onAdImpression,
+                            slotTag = "compare_native_ad",
+                        )
                     }
                 }
             }

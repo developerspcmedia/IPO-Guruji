@@ -25,6 +25,7 @@ import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyRow
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.rememberScrollState
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
@@ -73,6 +74,12 @@ import androidx.compose.ui.platform.testTag
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import com.example.ads.AdBannerSlot
+import com.example.ads.BannerAdPlacement
+import com.example.ads.ConsentManager
+import com.example.ads.NativeAdPlacement
+import com.example.ads.NativeAdSlot
 import com.example.data.model.IpoNewsArticle
 import com.example.data.model.IpoNewsCatalog
 import com.example.data.model.NewsCategory
@@ -104,11 +111,15 @@ fun IpoNewsScreen(
     onConsumeHighlightedArticle: () -> Unit = {},
     onToggleNewsAlerts: (Boolean) -> Unit = {},
     onToggleNewsAlertCategory: (NewsCategory) -> Unit = {},
+    onToggleUsaNewsAlerts: (Boolean) -> Unit = {},
     onRequestNotificationPermission: () -> Unit = {},
     onSendTestNewsAlert: () -> Unit = {},
+    onSendTestUsaNewsAlert: () -> Unit = {},
+    onAdImpression: () -> Unit = {},
 ) {
     val context = LocalContext.current
     val marketColors = LocalMarketColors.current
+    val canRequestAds by ConsentManager.canRequestAds.collectAsStateWithLifecycle()
     var selectedCategory by remember { mutableStateOf(NewsCategory.ALL) }
     var activeArticle by remember { mutableStateOf<IpoNewsArticle?>(null) }
     var showNewsAlertsSheet by remember { mutableStateOf(false) }
@@ -301,15 +312,50 @@ fun IpoNewsScreen(
                         }
                     }
 
-                    items(
+                    if (canRequestAds) {
+                        item(key = "news_native_ad_2") {
+                            NativeAdSlot(
+                                placement = NativeAdPlacement.SECONDARY,
+                                onAdImpression = onAdImpression,
+                                slotTag = "news_native_ad",
+                            )
+                        }
+                    }
+
+                    val bannerInsertIndex = if (listArticles.size >= 3) 2 else listArticles.lastIndex
+                    itemsIndexed(
                         items = listArticles,
-                        key = { it.id },
-                    ) { article ->
-                        NewsArticleCard(
-                            article = article,
-                            onClick = { activeArticle = article },
-                            onOpenLinkedIpo = { ipoId -> onOpenIpoDetail(ipoId) },
-                        )
+                        key = { _, article -> article.id },
+                    ) { index, article ->
+                        Column(modifier = Modifier.fillMaxWidth()) {
+                            NewsArticleCard(
+                                article = article,
+                                onClick = { activeArticle = article },
+                                onOpenLinkedIpo = { ipoId -> onOpenIpoDetail(ipoId) },
+                            )
+                            if (index == bannerInsertIndex) {
+                                AdBannerSlot(
+                                    placement = BannerAdPlacement.SECONDARY,
+                                    onAdImpression = onAdImpression,
+                                    topPaddingWhenLoadedDp = 12,
+                                    roundedCardStyle = true,
+                                    slotTag = "news_banner_ad_2",
+                                    containerTag = "news_banner_ad_2_container",
+                                )
+                            }
+                        }
+                    }
+
+                    if (listArticles.isEmpty() && canRequestAds) {
+                        item(key = "news_banner_ad_2_fallback") {
+                            AdBannerSlot(
+                                placement = BannerAdPlacement.SECONDARY,
+                                onAdImpression = onAdImpression,
+                                roundedCardStyle = true,
+                                slotTag = "news_banner_ad_2",
+                                containerTag = "news_banner_ad_2_container",
+                            )
+                        }
                     }
                 }
             }
@@ -436,8 +482,10 @@ fun IpoNewsScreen(
             hasNotificationPermission = hasNotificationPermission,
             onToggleEnabled = onToggleNewsAlerts,
             onToggleCategory = onToggleNewsAlertCategory,
+            onToggleUsaAlerts = onToggleUsaNewsAlerts,
             onRequestPermission = onRequestNotificationPermission,
             onSendTestAlert = onSendTestNewsAlert,
+            onSendTestUsaAlert = onSendTestUsaNewsAlert,
             onDismiss = { showNewsAlertsSheet = false },
         )
     }
@@ -544,13 +592,17 @@ private fun NewsAlertsBottomSheet(
     hasNotificationPermission: Boolean,
     onToggleEnabled: (Boolean) -> Unit,
     onToggleCategory: (NewsCategory) -> Unit,
+    onToggleUsaAlerts: (Boolean) -> Unit,
     onRequestPermission: () -> Unit,
     onSendTestAlert: () -> Unit,
+    onSendTestUsaAlert: () -> Unit,
     onDismiss: () -> Unit,
 ) {
     val glass = LocalGlassStyle.current
     val marketColors = LocalMarketColors.current
     var testSent by remember { mutableStateOf(false) }
+    var usaTestSent by remember { mutableStateOf(false) }
+    val usaAlertsActive = enabled && NewsCategory.USA_IPOS in selectedCategories
     val topicOptions = remember {
         NewsCategory.entries.filter { it != NewsCategory.ALL }
     }
@@ -637,6 +689,64 @@ private fun NewsAlertsBottomSheet(
                         onCheckedChange = onToggleEnabled,
                         modifier = Modifier.testTag("news_alerts_master_switch"),
                     )
+                }
+            }
+
+            // Dedicated USA IPO Breaking News Alert Card
+            Surface(
+                shape = MaterialTheme.shapes.large,
+                color = MaterialTheme.colorScheme.secondaryContainer.copy(alpha = 0.55f),
+                contentColor = MaterialTheme.colorScheme.onSurface,
+                border = glassBorderStroke(
+                    glass = glass,
+                    width = 1.dp,
+                    accentTint = MaterialTheme.colorScheme.secondary,
+                ),
+                modifier = Modifier.fillMaxWidth(),
+            ) {
+                Column(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(14.dp),
+                    verticalArrangement = Arrangement.spacedBy(10.dp),
+                ) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically,
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            Text(
+                                text = "USA IPO News Alerts",
+                                style = MaterialTheme.typography.titleSmall,
+                                fontWeight = FontWeight.Bold,
+                                color = MaterialTheme.colorScheme.onSurface,
+                            )
+                            Text(
+                                text = "Instant alerts for NASDAQ, NYSE & SEC S-1/F-1 breaking updates",
+                                style = MaterialTheme.typography.bodySmall,
+                                color = marketColors.mutedText,
+                            )
+                        }
+                        Spacer(modifier = Modifier.width(8.dp))
+                        Switch(
+                            checked = usaAlertsActive,
+                            onCheckedChange = onToggleUsaAlerts,
+                            modifier = Modifier.testTag("news_alerts_usa_switch"),
+                        )
+                    }
+                    OutlinedButton(
+                        onClick = {
+                            onSendTestUsaAlert()
+                            usaTestSent = true
+                        },
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .minimumInteractiveComponentSize()
+                            .testTag("news_alerts_usa_test_button"),
+                    ) {
+                        Text(if (usaTestSent) "USA IPO Test Alert Sent" else "Send Test USA IPO Alert")
+                    }
                 }
             }
 
@@ -973,6 +1083,7 @@ private fun NewsArticleCard(
 private fun NewsCategoryBadge(category: NewsCategory) {
     val marketColors = LocalMarketColors.current
     val (bg, fg) = when (category) {
+        NewsCategory.USA_IPOS -> MaterialTheme.colorScheme.secondaryContainer to MaterialTheme.colorScheme.onSecondaryContainer
         NewsCategory.UPCOMING -> MaterialTheme.colorScheme.primaryContainer to MaterialTheme.colorScheme.primary
         NewsCategory.GMP_LISTING -> marketColors.bullishContainer to marketColors.bullish
         NewsCategory.SME_BUZZ -> marketColors.smeContainer to marketColors.smeBadge

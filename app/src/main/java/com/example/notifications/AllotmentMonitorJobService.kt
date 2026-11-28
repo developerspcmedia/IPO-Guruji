@@ -5,6 +5,7 @@ import android.app.job.JobService
 import com.example.data.local.IpoDatabase
 import com.example.data.preferences.UserPreferencesRepository
 import com.example.data.repository.AllotmentRepository
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -40,6 +41,8 @@ class AllotmentMonitorJobService : JobService() {
                 if (!stillPending) {
                     IpoNotificationManager.scheduleAllotmentMonitor(applicationContext, enabled = false)
                 }
+            } catch (e: CancellationException) {
+                throw e
             } catch (_: Throwable) {
                 shouldReschedule = true
             } finally {

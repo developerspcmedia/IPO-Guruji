@@ -42,6 +42,18 @@ data class DaySubscription(
     val niiX: Double,
     val retailX: Double,
     val totalX: Double,
+    val dateLabel: String = "",
+    val bNiiX: Double = 0.0,
+    val sNiiX: Double = 0.0,
+)
+
+@Serializable
+data class LiveApplicationCount(
+    val categoryId: String,
+    val categoryLabel: String,
+    val reservedApplications: Long = 0L,
+    val appliedApplications: Long = 0L,
+    val subscriptionX: Double = 0.0,
 )
 
 @Serializable
@@ -102,6 +114,9 @@ data class IpoEntity(
     val sortOrder: Int = 0,
     val logoUrl: String = "",
     val bannerImageUrl: String = "",
+    val liveApplicationCounts: List<LiveApplicationCount> = emptyList(),
+    val subscriptionSourceLabel: String = "",
+    val subscriptionUpdatedAtMs: Long = 0L,
 ) {
     val minInvestment: Int
         get() = priceHigh * lotSize
@@ -189,45 +204,129 @@ data class IpoEntity(
             0L
         }
 
+    val hasLiveApplicationCounts: Boolean
+        get() = liveApplicationCounts.any { it.appliedApplications > 0L }
+
+    val liveTotalApplications: Long
+        get() {
+            val explicitTotal = liveApplicationCounts
+                .firstOrNull { it.categoryId == "total" }
+                ?.appliedApplications
+                ?: 0L
+            if (explicitTotal > 0L) return explicitTotal
+            return liveApplicationCounts
+                .filter { it.categoryId != "total" }
+                .sumOf { it.appliedApplications }
+        }
+
     val applicationWiseBreakup: List<ApplicationBreakupRow>
         get() {
-            if (issueSizeCr <= 0.0 || priceHigh <= 0 || lotSize <= 0) return emptyList()
-            val totalShares = totalIssueShares
+            val liveById = liveApplicationCounts.associateBy { it.categoryId }
+            val hasQuotaMath = issueSizeCr > 0.0 && priceHigh > 0 && lotSize > 0
+            if (!hasQuotaMath && liveById.isEmpty()) return emptyList()
+
+            val totalShares = if (hasQuotaMath) totalIssueShares else 0L
             val isSme = boardType == BoardType.SME
             val retailPct = if (isSme) 0.3325 else 0.35
             val sHniPct = if (isSme) 0.0475 else 0.05
             val bHniPct = if (isSme) 0.095 else 0.10
 
-            val retailReserved = ((totalShares * retailPct) / lotSize.toDouble()).toLong().coerceAtLeast(1L)
-            val sHniReserved = ((totalShares * sHniPct) / (lotSize.toLong() * sHniMinLots).toDouble()).toLong().coerceAtLeast(1L)
-            val bHniReserved = ((totalShares * bHniPct) / (lotSize.toLong() * bHniMinLots).toDouble()).toLong().coerceAtLeast(1L)
+            val estRetailReserved = if (hasQuotaMath) {
+                ((totalShares * retailPct) / lotSize.toDouble()).toLong().coerceAtLeast(1L)
+            } else {
+                0L
+            }
+            val estSHniReserved = if (hasQuotaMath) {
+                ((totalShares * sHniPct) / (lotSize.toLong() * sHniMinLots).toDouble()).toLong().coerceAtLeast(1L)
+            } else {
+                0L
+            }
+            val estBHniReserved = if (hasQuotaMath) {
+                ((totalShares * bHniPct) / (lotSize.toLong() * bHniMinLots).toDouble()).toLong().coerceAtLeast(1L)
+            } else {
+                0L
+            }
 
-            return listOf(
-                ApplicationBreakupRow(
+            fun buildRow(
+                id: String,
+                label: String,
+                quotaLabel: String,
+                estReserved: Long,
+                fallbackSubX: Double,
+            ): ApplicationBreakupRow {
+                val live = liveById[id]
+                val reserved = live?.reservedApplications?.takeIf { it > 0L } ?: estReserved
+                val subX = live?.subscriptionX?.takeIf { it > 0.0 } ?: fallbackSubX
+                val hasLiveApps = (live?.appliedApplications ?: 0L) > 0L
+                val applied = if (hasLiveApps) {
+                    live!!.appliedApplications
+                } else {
+                    (reserved * subX).toLong()
+                }
+                return ApplicationBreakupRow(
+                    id = id,
+                    categoryLabel = live?.categoryLabel?.takeIf { it.isNotBlank() } ?: label,
+                    quotaLabel = quotaLabel,
+                    reservedApplications = reserved,
+                    receivedApplications = applied,
+                    subscriptionX = subX,
+                    isLiveExchangeCount = hasLiveApps,
+                )
+            }
+
+            val rows = mutableListOf(
+                buildRow(
                     id = "retail",
-                    categoryLabel = "Retail",
+                    label = "Retail",
                     quotaLabel = if (isSme) "~33% Quota" else "35% Quota",
-                    reservedApplications = retailReserved,
-                    receivedApplications = (retailReserved * retailSubX).toLong(),
-                    subscriptionX = retailSubX,
+                    estReserved = estRetailReserved,
+                    fallbackSubX = retailSubX,
                 ),
-                ApplicationBreakupRow(
+                buildRow(
                     id = "shni",
-                    categoryLabel = "S-HNI",
+                    label = "S-HNI",
                     quotaLabel = "₹2L–₹10L",
-                    reservedApplications = sHniReserved,
-                    receivedApplications = (sHniReserved * sNiiSubX).toLong(),
-                    subscriptionX = sNiiSubX,
+                    estReserved = estSHniReserved,
+                    fallbackSubX = sNiiSubX,
                 ),
-                ApplicationBreakupRow(
+                buildRow(
                     id = "bhni",
-                    categoryLabel = "Big HNI",
+                    label = "Big HNI",
                     quotaLabel = "> ₹10 Lakh",
-                    reservedApplications = bHniReserved,
-                    receivedApplications = (bHniReserved * bNiiSubX).toLong(),
-                    subscriptionX = bNiiSubX,
+                    estReserved = estBHniReserved,
+                    fallbackSubX = bNiiSubX,
                 ),
             )
+
+            // Append Employee / Shareholder rows when live exchange application counts are published
+            liveById["employee"]?.takeIf { it.appliedApplications > 0L }?.let { emp ->
+                rows.add(
+                    ApplicationBreakupRow(
+                        id = "employee",
+                        categoryLabel = "Employee",
+                        quotaLabel = "Emp Quota",
+                        reservedApplications = emp.reservedApplications,
+                        receivedApplications = emp.appliedApplications,
+                        subscriptionX = emp.subscriptionX.takeIf { it > 0.0 } ?: employeeSubX,
+                        isLiveExchangeCount = true,
+                    ),
+                )
+            }
+            liveById["shareholder"]?.takeIf { it.appliedApplications > 0L }?.let { sh ->
+                rows.add(
+                    ApplicationBreakupRow(
+                        id = "shareholder",
+                        categoryLabel = "Shareholder",
+                        quotaLabel = "SH Quota",
+                        reservedApplications = sh.reservedApplications,
+                        receivedApplications = sh.appliedApplications,
+                        subscriptionX = sh.subscriptionX,
+                        isLiveExchangeCount = true,
+                    ),
+                )
+            }
+
+            return rows
         }
 
     val reservationCategoryBreakdown: List<ReservationCategoryRow>
@@ -291,6 +390,7 @@ data class ApplicationBreakupRow(
     val reservedApplications: Long,
     val receivedApplications: Long,
     val subscriptionX: Double,
+    val isLiveExchangeCount: Boolean = false,
 )
 
 data class ReservationCategoryRow(

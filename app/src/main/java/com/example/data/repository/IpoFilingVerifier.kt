@@ -3,6 +3,7 @@ package com.example.data.repository
 import com.example.data.model.IpoDateUtils
 import com.example.data.model.IpoEntity
 import com.example.data.model.IpoStatus
+import com.example.data.model.IpoTimelineBucket
 import java.util.Locale
 
 enum class FilingRejectionReason(val label: String) {
@@ -126,20 +127,24 @@ object IpoFilingVerifier {
             .toCollection(LinkedHashSet())
     }
 
-    fun sanitizeConfirmedDate(raw: String): String {
+    fun sanitizeConfirmedDate(
+        raw: String,
+        referenceTimeMs: Long = System.currentTimeMillis(),
+    ): String {
         val cleaned = raw.trim()
         val lower = cleaned.lowercase(Locale.US)
         if (lower in PLACEHOLDER_VALUE_MARKERS) return ""
         if (lower.contains("tba") || lower.contains("tbc") || lower.contains("expected") || lower.contains("awaited")) {
             return ""
         }
-        return cleaned
+        if (cleaned.contains('₹') || cleaned.contains('%') || lower.contains("rs.") || lower.contains("l@")) {
+            return ""
+        }
+        return IpoDateUtils.normalizeDateString(cleaned, referenceTimeMs)
     }
 
     fun isConfirmedDate(raw: String, referenceTimeMs: Long = System.currentTimeMillis()): Boolean {
-        val cleaned = sanitizeConfirmedDate(raw)
-        if (cleaned.isBlank()) return false
-        return IpoDateUtils.parseFlexibleDateMs(cleaned, referenceTimeMs) != null
+        return sanitizeConfirmedDate(raw, referenceTimeMs).isNotBlank()
     }
 
     fun containsUnfiledOrRumoredMarkers(text: String): Boolean {
@@ -206,7 +211,11 @@ object IpoFilingVerifier {
                 referenceTimeMs = referenceTimeMs,
             )
 
-        val hasValidSchedule = if (isClosedOrListed) {
+        val openMs = IpoDateUtils.parseFlexibleDateMs(quote.openDate, referenceTimeMs)
+        val closeMs = IpoDateUtils.parseFlexibleDateMs(quote.closeDate, referenceTimeMs)
+        val hasConsistentWindow = openMs == null || closeMs == null || IpoDateUtils.isValidBiddingWindow(openMs, closeMs)
+
+        val hasValidSchedule = hasConsistentWindow && if (isClosedOrListed) {
             isConfirmedDate(quote.listingDate, referenceTimeMs) ||
                 isConfirmedDate(quote.closeDate, referenceTimeMs) ||
                 isConfirmedDate(quote.openDate, referenceTimeMs)
@@ -249,6 +258,12 @@ object IpoFilingVerifier {
                 referenceTimeMs = referenceTimeMs,
             )
 
+        val openMs = IpoDateUtils.parseFlexibleDateMs(entity.openDate, referenceTimeMs)
+        val closeMs = IpoDateUtils.parseFlexibleDateMs(entity.closeDate, referenceTimeMs)
+        if (openMs != null && closeMs != null && !IpoDateUtils.isValidBiddingWindow(openMs, closeMs)) {
+            return false
+        }
+
         return if (isClosedOrListed) {
             isConfirmedDate(entity.listingDate, referenceTimeMs) ||
                 isConfirmedDate(entity.closeDate, referenceTimeMs) ||
@@ -257,6 +272,80 @@ object IpoFilingVerifier {
             isConfirmedDate(entity.openDate, referenceTimeMs) &&
                 isConfirmedDate(entity.closeDate, referenceTimeMs)
         }
+    }
+
+    private val NON_COMPANY_ROW_LABELS = setOf(
+        "ipo name",
+        "company name",
+        "company",
+        "issuer",
+        "issuer name",
+        "total",
+        "upcoming ipo",
+        "upcoming ipos",
+        "mainboard ipo",
+        "sme ipo",
+        "click here",
+        "read more",
+        "view all",
+        "more details",
+        "disclaimer",
+    )
+
+    fun isValidCompanyName(rawName: String): Boolean {
+        val clean = rawName.trim()
+        if (clean.length < 3) return false
+        if (!clean.any { it.isLetter() }) return false
+        val lower = clean.lowercase(Locale.US)
+        if (lower in PLACEHOLDER_VALUE_MARKERS || lower in NON_COMPANY_ROW_LABELS) return false
+        return true
+    }
+
+    /**
+     * Allows ALL fetched & found Upcoming IPOs (including single-source DRHP/RHP entries and
+     * filings whose open/close dates, price band, lot size, or issue size are still TBA)
+     * so every discovered upcoming IPO name appears in the Upcoming tab.
+     */
+    fun isDisplayableUpcomingQuote(
+        quote: LiveGmpQuote,
+        referenceTimeMs: Long = System.currentTimeMillis(),
+    ): Boolean {
+        if (!isValidCompanyName(quote.companyName)) return false
+        if (quote.isUnconfirmedOrRumored || isHardRejectedStatus(quote.companyName)) return false
+        val bucket = IpoDateUtils.classifyTimelineTab(
+            openDate = quote.openDate,
+            closeDate = quote.closeDate,
+            listingDate = quote.listingDate,
+            status = quote.status ?: IpoStatus.UPCOMING,
+            referenceTimeMs = referenceTimeMs,
+        )
+        return bucket == IpoTimelineBucket.UPCOMING
+    }
+
+    /**
+     * Final display gate for persisted [IpoEntity] records:
+     * - Upcoming tab IPOs: display ALL fetched/discovered upcoming IPOs with a valid company name
+     *   (even when price band, lot size, issue size, or exact dates are TBA).
+     * - Current & Listed IPOs: enforce confirmed filing details via [isVerifiedFiledEntity].
+     */
+    fun isDisplayableEntity(
+        entity: IpoEntity,
+        referenceTimeMs: Long = System.currentTimeMillis(),
+    ): Boolean {
+        if (com.example.data.model.IpoOverrideMerger.isAdminManagedEntity(entity)) {
+            return isValidCompanyName(entity.companyName)
+        }
+        val bucket = IpoDateUtils.classifyTimelineTab(
+            openDate = entity.openDate,
+            closeDate = entity.closeDate,
+            listingDate = entity.listingDate,
+            status = entity.status,
+            referenceTimeMs = referenceTimeMs,
+        )
+        if (bucket == IpoTimelineBucket.UPCOMING) {
+            return isValidCompanyName(entity.companyName) && !isHardRejectedStatus(entity.companyName)
+        }
+        return isVerifiedFiledEntity(entity, referenceTimeMs)
     }
 
     fun formatVerifiedSourcesLabel(providers: Set<String>): String {

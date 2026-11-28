@@ -36,6 +36,8 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import androidx.compose.ui.window.DialogProperties
 import com.example.R
+import com.example.ads.NativeAdPlacement
+import com.example.ads.NativeAdSlot
 import com.example.ui.theme.LocalGlassStyle
 import com.example.ui.theme.LocalMarketColors
 
@@ -43,6 +45,7 @@ import com.example.ui.theme.LocalMarketColors
 fun ExitAppDialog(
     onDismiss: () -> Unit,
     onConfirmExit: () -> Unit,
+    onAdImpression: () -> Unit = {},
 ) {
     val marketColors = LocalMarketColors.current
     val glass = LocalGlassStyle.current
@@ -103,7 +106,14 @@ fun ExitAppDialog(
                     textAlign = TextAlign.Center,
                 )
 
-                Spacer(modifier = Modifier.height(22.dp))
+                NativeAdSlot(
+                    placement = NativeAdPlacement.SECONDARY,
+                    topPaddingDp = 16,
+                    onAdImpression = onAdImpression,
+                    slotTag = "exit_dialog_native_ad",
+                )
+
+                Spacer(modifier = Modifier.height(20.dp))
 
                 Row(
                     modifier = Modifier.fillMaxWidth(),

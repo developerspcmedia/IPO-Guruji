@@ -31,15 +31,13 @@ import androidx.compose.foundation.layout.windowInsetsPadding
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.Apps
-import androidx.compose.material.icons.outlined.Business
 import androidx.compose.material.icons.outlined.Newspaper
 import androidx.compose.material.icons.outlined.NotificationsActive
-import androidx.compose.material.icons.outlined.RocketLaunch
+import androidx.compose.material.icons.outlined.Public
 import androidx.compose.material.icons.rounded.Apps
-import androidx.compose.material.icons.rounded.Business
 import androidx.compose.material.icons.rounded.Newspaper
 import androidx.compose.material.icons.rounded.NotificationsActive
-import androidx.compose.material.icons.rounded.RocketLaunch
+import androidx.compose.material.icons.rounded.Public
 import androidx.compose.material3.DrawerValue
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
@@ -53,6 +51,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.minimumInteractiveComponentSize
 import androidx.compose.material3.rememberDrawerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
@@ -84,11 +83,17 @@ import androidx.navigation.compose.rememberNavController
 import androidx.navigation.toRoute
 import com.example.ads.AdBannerSlot
 import com.example.ads.AdMobManager
+import com.example.ads.BannerAdPlacement
+import com.example.ads.ConsentManager
 import com.example.security.BiometricVaultLock
 import com.example.data.local.IpoDatabase
+import com.example.data.model.NewsCategory
+import com.example.data.preferences.CloudSyncedPrefsSnapshot
+import com.example.data.preferences.ThemePreference
 import com.example.data.preferences.UserPreferencesRepository
 import com.example.data.repository.AllotmentRepository
 import com.example.data.repository.IpoRepository
+import com.example.data.repository.UsIpoRepository
 import com.example.notifications.IpoNotificationManager
 import com.example.ui.components.AppNavigationDrawerSheet
 import com.example.ui.components.DrawerMenuItemId
@@ -108,6 +113,8 @@ import com.example.ui.screens.MarketRadarScreen
 import com.example.ui.screens.PrivacyPolicyScreen
 import com.example.ui.screens.SettingsBottomSheet
 import com.example.ui.screens.TermsConditionsScreen
+import com.example.ui.screens.UsIpoBoardScreen
+import com.example.ui.screens.UsIpoDetailScreen
 import com.example.ui.screens.YearWiseIpoListScreen
 import com.example.ui.screens.YearWiseSubscriptionScreen
 import com.example.ui.viewmodel.AllotmentAlertsViewModel
@@ -118,11 +125,35 @@ import com.example.ui.viewmodel.IpoBoardViewModel
 import com.example.ui.viewmodel.IpoDetailViewModel
 import com.example.ui.viewmodel.RadarSortMode
 import com.example.ui.viewmodel.StatusFilter
+import com.example.ui.viewmodel.UsIpoViewModel
+import androidx.credentials.CredentialManager
+import androidx.compose.runtime.key
+import com.example.data.firebase.AdminAuthManager
+import com.example.data.firebase.AdminAuthSession
+import com.example.data.model.InvestorCategory
+import com.example.data.model.UserProfileDocument
+import com.example.data.repository.AdminOverrideRepository
+import com.example.data.repository.UserProfileRepository
+import com.example.ui.screens.AdminDashboardScreen
+import com.example.ui.screens.UserProfileScreen
+import com.example.ui.viewmodel.AdminDashboardViewModel
+import com.example.ui.viewmodel.UserProfileViewModel
+import com.google.firebase.Firebase
+import com.google.firebase.auth.auth
+import com.google.firebase.firestore.FirebaseFirestoreException
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.flow.catch
 import kotlinx.coroutines.launch
 import kotlinx.serialization.Serializable
 
 @Serializable
 object IpoBoardRoute
+
+@Serializable
+object UserProfileRoute
+
+@Serializable
+object AdminDashboardRoute
 
 @Serializable
 object IpoNewsRoute
@@ -160,8 +191,15 @@ object TermsRoute
 @Serializable
 data class IpoDetailRoute(val ipoId: String)
 
+@Serializable
+object UsIpoBoardRoute
+
+@Serializable
+data class UsIpoDetailRoute(val dealId: String)
+
 private sealed interface BottomBarAction {
-    data class Board(val filter: BoardFilter) : BottomBarAction
+    data object India : BottomBarAction
+    data object Usa : BottomBarAction
     data object Allotment : BottomBarAction
     data object News : BottomBarAction
 }
@@ -179,7 +217,10 @@ fun AppNavigation(
     boardViewModel: IpoBoardViewModel,
     uiState: IpoBoardUiState,
     ipoRepository: IpoRepository,
+    adminOverrideRepository: AdminOverrideRepository? = null,
+    userProfileRepository: UserProfileRepository? = null,
     allotmentRepository: AllotmentRepository? = null,
+    usIpoRepository: UsIpoRepository? = null,
     pendingNotificationIpoId: String? = null,
     onConsumeNotificationIpoId: () -> Unit = {},
     pendingOpenAllotmentAlerts: Boolean = false,
@@ -193,9 +234,127 @@ fun AppNavigation(
     val context = LocalContext.current
     val scope = rememberCoroutineScope()
     val drawerState = rememberDrawerState(initialValue = DrawerValue.Closed)
+    val preferencesRepository = remember(context) {
+        UserPreferencesRepository(context.applicationContext)
+    }
+    val resolvedAdminOverrideRepository = remember(adminOverrideRepository, context) {
+        adminOverrideRepository ?: AdminOverrideRepository(
+            context = context.applicationContext,
+            overrideDao = IpoDatabase.getInstance(context.applicationContext).adminOverrideDao(),
+        )
+    }
+    val resolvedUserProfileRepository = remember(userProfileRepository, context) {
+        userProfileRepository ?: UserProfileRepository(context.applicationContext)
+    }
+    val credentialManager = remember(context) {
+        runCatching { CredentialManager.create(context) }.getOrNull()
+    }
+    val authSession by remember { AdminAuthManager.authStateFlow() }
+        .collectAsStateWithLifecycle(initialValue = AdminAuthSession())
+    val cachedOverrides by remember(resolvedAdminOverrideRepository) {
+        resolvedAdminOverrideRepository.observeCachedOverrides()
+    }.collectAsStateWithLifecycle(initialValue = emptyList())
+    var signedInUserProfile by remember { mutableStateOf<UserProfileDocument?>(null) }
+    var isAdminSigningIn by remember { mutableStateOf(false) }
+    var adminAuthError by remember { mutableStateOf<String?>(null) }
+    var profileStatusBanner by remember { mutableStateOf<String?>(null) }
+
+    LaunchedEffect(credentialManager) {
+        if (credentialManager != null) {
+            AdminAuthManager.attemptAutoSignIn(
+                context = context,
+                credentialManager = credentialManager,
+                scope = scope,
+                onAuthSuccess = { adminAuthError = null },
+                onUnauthenticated = {},
+            )
+        }
+    }
+
+    // Hydrate and observe the signed-in user's private cloud profile (/user_profiles/{uid})
+    LaunchedEffect(authSession.uid, resolvedUserProfileRepository) {
+        val uid = authSession.uid
+        if (uid.isBlank()) {
+            signedInUserProfile = null
+        } else {
+            resolvedUserProfileRepository.ensureAndHydrateOnSignIn(preferencesRepository)
+            resolvedUserProfileRepository.observeUserProfile(uid)
+                .catch { error ->
+                    val firestoreError = generateSequence(error) { it.cause }
+                        .filterIsInstance<FirebaseFirestoreException>()
+                        .firstOrNull()
+                    if (firestoreError == null && error is CancellationException) throw error
+                }
+                .collect { doc ->
+                    signedInUserProfile = doc
+                }
+        }
+    }
+
+    // Keep published admin overrides synced in real time across all devices
+    LaunchedEffect(resolvedAdminOverrideRepository) {
+        resolvedAdminOverrideRepository.observePublishedCloudOverrides()
+            .catch { error ->
+                val firestoreError = generateSequence(error) { it.cause }
+                    .filterIsInstance<FirebaseFirestoreException>()
+                    .firstOrNull()
+                if (firestoreError == null && error is CancellationException) throw error
+                // Offline/permission failures are logged inside AdminOverrideRepository
+            }
+            .collect { }
+    }
+
+    fun triggerGoogleSignIn(openProfileOnSuccess: Boolean = false) {
+        val cm = credentialManager ?: run {
+            adminAuthError = "Google Sign-In is unavailable on this device."
+            return
+        }
+        isAdminSigningIn = true
+        adminAuthError = null
+        AdminAuthManager.onGoogleSignInClicked(
+            context = context,
+            credentialManager = cm,
+            scope = scope,
+            onAuthSuccess = { session ->
+                isAdminSigningIn = false
+                adminAuthError = null
+                if (openProfileOnSuccess && !session.isAuthorizedAdmin) {
+                    scope.launch { drawerState.close() }
+                    navController.navigate(UserProfileRoute) { launchSingleTop = true }
+                }
+            },
+            onAuthError = { message ->
+                isAdminSigningIn = false
+                adminAuthError = message
+            },
+            onAuthCancelled = {
+                isAdminSigningIn = false
+            },
+        )
+    }
+
+    fun triggerSignOut() {
+        val cm = credentialManager
+        adminAuthError = null
+        signedInUserProfile = null
+        if (cm != null) {
+            AdminAuthManager.signOut(
+                credentialManager = cm,
+                scope = scope,
+            )
+        } else {
+            runCatching { Firebase.auth.signOut() }
+        }
+    }
+
     val resolvedAllotmentRepository = remember(allotmentRepository, context) {
         allotmentRepository ?: AllotmentRepository(
             IpoDatabase.getInstance(context.applicationContext).allotmentDao(),
+        )
+    }
+    val resolvedUsIpoRepository = remember(usIpoRepository, context) {
+        usIpoRepository ?: UsIpoRepository(
+            IpoDatabase.getInstance(context.applicationContext).usIpoDao(),
         )
     }
     val allotmentViewModel: AllotmentAlertsViewModel = viewModel(
@@ -205,7 +364,14 @@ fun AppNavigation(
             appContext = context.applicationContext,
         ),
     )
+    val usIpoViewModel: UsIpoViewModel = viewModel(
+        factory = UsIpoViewModel.Factory(repository = resolvedUsIpoRepository),
+    )
     val allotmentUiState by allotmentViewModel.uiState.collectAsStateWithLifecycle()
+    val usIpoUiState by usIpoViewModel.uiState.collectAsStateWithLifecycle()
+    val secLookupInProgressIds by usIpoViewModel.secLookupInProgressIds.collectAsStateWithLifecycle()
+    val canRequestAds by ConsentManager.canRequestAds.collectAsStateWithLifecycle()
+    val isPrivacyOptionsRequired by ConsentManager.isPrivacyOptionsRequired.collectAsStateWithLifecycle()
     var showSettingsSheet by remember { mutableStateOf(false) }
     var showContactDialog by remember { mutableStateOf(false) }
     var showExitDialog by remember { mutableStateOf(false) }
@@ -314,6 +480,8 @@ fun AppNavigation(
     val navBackStackEntry by navController.currentBackStackEntryAsState()
     val currentDestination = navBackStackEntry?.destination
     val isDetailScreen = currentDestination?.hasRoute<IpoDetailRoute>() == true
+    val isUsBoardScreen = currentDestination?.hasRoute<UsIpoBoardRoute>() == true
+    val isUsDetailScreen = currentDestination?.hasRoute<UsIpoDetailRoute>() == true
     val isNewsScreen = currentDestination?.hasRoute<IpoNewsRoute>() == true
     val isMarketRadarScreen = currentDestination?.hasRoute<MarketRadarRoute>() == true
     val isCompareIposScreen = currentDestination?.hasRoute<CompareIposRoute>() == true
@@ -325,10 +493,14 @@ fun AppNavigation(
     val isFaqsScreen = currentDestination?.hasRoute<FaqsRoute>() == true
     val isPrivacyScreen = currentDestination?.hasRoute<PrivacyPolicyRoute>() == true
     val isTermsScreen = currentDestination?.hasRoute<TermsRoute>() == true
+    val isUserProfileScreen = currentDestination?.hasRoute<UserProfileRoute>() == true
+    val isAdminDashboardScreen = currentDestination?.hasRoute<AdminDashboardRoute>() == true
     val isDrawerSubScreen = isMarketRadarScreen || isCompareIposScreen || isYearWiseListScreen || isYearWiseSubScreen ||
-        isCalendarScreen || isAllotmentHubScreen || isFaqsScreen || isPrivacyScreen || isTermsScreen
+        isCalendarScreen || isAllotmentHubScreen || isFaqsScreen || isPrivacyScreen || isTermsScreen ||
+        isUserProfileScreen || isAdminDashboardScreen
     val isBoardScreen = currentDestination?.hasRoute<IpoBoardRoute>() != false &&
-        !isNewsScreen && !isMarketRadarScreen && !isAllotmentAlertsScreen && !isDrawerSubScreen && !isDetailScreen
+        !isNewsScreen && !isUsBoardScreen && !isUsDetailScreen && !isMarketRadarScreen &&
+        !isAllotmentAlertsScreen && !isDrawerSubScreen && !isDetailScreen
 
     LaunchedEffect(isNewsScreen, uiState.unreadNewsCount) {
         if (isNewsScreen && uiState.unreadNewsCount > 0) {
@@ -337,8 +509,11 @@ fun AppNavigation(
     }
 
     val activeDrawerItem = when {
+        isUserProfileScreen -> DrawerMenuItemId.USER_PROFILE
+        isAdminDashboardScreen -> DrawerMenuItemId.ADMIN_DASHBOARD
         showSettingsSheet -> DrawerMenuItemId.SETTINGS
         showContactDialog -> DrawerMenuItemId.CONTACT_US
+        isUsBoardScreen || isUsDetailScreen -> DrawerMenuItemId.USA_IPOS
         isNewsScreen -> DrawerMenuItemId.IPO_NEWS
         isMarketRadarScreen -> DrawerMenuItemId.IPO_GMP
         isCompareIposScreen -> DrawerMenuItemId.COMPARE_IPOS
@@ -371,25 +546,18 @@ fun AppNavigation(
     val bottomItems = remember {
         listOf(
             FixedBottomItem(
-                action = BottomBarAction.Board(BoardFilter.ALL),
-                label = "ALL",
+                action = BottomBarAction.India,
+                label = "INDIA",
                 selectedIcon = Icons.Rounded.Apps,
                 unselectedIcon = Icons.Outlined.Apps,
-                testTag = "bottom_bar_all",
+                testTag = "bottom_bar_india",
             ),
             FixedBottomItem(
-                action = BottomBarAction.Board(BoardFilter.MAINBOARD),
-                label = "MAINBOARD",
-                selectedIcon = Icons.Rounded.Business,
-                unselectedIcon = Icons.Outlined.Business,
-                testTag = "bottom_bar_mainboard",
-            ),
-            FixedBottomItem(
-                action = BottomBarAction.Board(BoardFilter.SME),
-                label = "SME",
-                selectedIcon = Icons.Rounded.RocketLaunch,
-                unselectedIcon = Icons.Outlined.RocketLaunch,
-                testTag = "bottom_bar_sme",
+                action = BottomBarAction.Usa,
+                label = "USA",
+                selectedIcon = Icons.Rounded.Public,
+                unselectedIcon = Icons.Outlined.Public,
+                testTag = "bottom_bar_usa",
             ),
             FixedBottomItem(
                 action = BottomBarAction.Allotment,
@@ -410,10 +578,21 @@ fun AppNavigation(
 
     fun handleBottomBarClick(action: BottomBarAction) {
         when (action) {
-            is BottomBarAction.Board -> {
-                boardViewModel.setBoardFilter(action.filter)
+            BottomBarAction.India -> {
                 if (!isBoardScreen) {
                     navController.navigate(IpoBoardRoute) {
+                        popUpTo(navController.graph.findStartDestination().id) {
+                            saveState = true
+                        }
+                        launchSingleTop = true
+                        restoreState = true
+                    }
+                }
+            }
+
+            BottomBarAction.Usa -> {
+                if (!isUsBoardScreen) {
+                    navController.navigate(UsIpoBoardRoute) {
                         popUpTo(navController.graph.findStartDestination().id) {
                             saveState = true
                         }
@@ -476,23 +655,39 @@ fun AppNavigation(
     fun handleDrawerSelection(item: DrawerMenuItemId) {
         scope.launch { drawerState.close() }
         when (item) {
+            DrawerMenuItemId.USER_PROFILE -> {
+                navController.navigate(UserProfileRoute) { launchSingleTop = true }
+            }
+
+            DrawerMenuItemId.ADMIN_DASHBOARD -> {
+                if (authSession.isAuthorizedAdmin) {
+                    navController.navigate(AdminDashboardRoute) { launchSingleTop = true }
+                } else {
+                    navController.navigate(UserProfileRoute) { launchSingleTop = true }
+                }
+            }
+
             DrawerMenuItemId.HOME -> {
-                boardViewModel.setTimelineTab(BoardTimelineTab.CURRENT_UPCOMING)
+                boardViewModel.setTimelineTab(BoardTimelineTab.CURRENT)
                 boardViewModel.setBoardFilter(BoardFilter.ALL)
                 boardViewModel.setStatusFilter(StatusFilter.ALL)
                 navigateToBoardRoot()
             }
 
             DrawerMenuItemId.MAINBOARD -> {
-                boardViewModel.setTimelineTab(BoardTimelineTab.CURRENT_UPCOMING)
+                boardViewModel.setTimelineTab(BoardTimelineTab.CURRENT)
                 boardViewModel.setBoardFilter(BoardFilter.MAINBOARD)
                 navigateToBoardRoot()
             }
 
             DrawerMenuItemId.SME -> {
-                boardViewModel.setTimelineTab(BoardTimelineTab.CURRENT_UPCOMING)
+                boardViewModel.setTimelineTab(BoardTimelineTab.CURRENT)
                 boardViewModel.setBoardFilter(BoardFilter.SME)
                 navigateToBoardRoot()
+            }
+
+            DrawerMenuItemId.USA_IPOS -> {
+                handleBottomBarClick(BottomBarAction.Usa)
             }
 
             DrawerMenuItemId.LISTED -> {
@@ -581,13 +776,14 @@ fun AppNavigation(
     BoxWithConstraints(modifier = Modifier.fillMaxSize()) {
         val useNavigationRail = maxWidth >= 600.dp
         val drawerWidth = minOf(304.dp, maxWidth * 0.82f)
-        val hideChromeBars = isDetailScreen || isDrawerSubScreen
+        val hideChromeBars = isDetailScreen || isUsDetailScreen || isDrawerSubScreen
+        val showSecondaryPageBanner = (isDrawerSubScreen && !isPrivacyScreen && !isTermsScreen && !isAdminDashboardScreen && !isUserProfileScreen) || isUsDetailScreen
 
         val glass = LocalGlassStyle.current
 
         ModalNavigationDrawer(
             drawerState = drawerState,
-            gesturesEnabled = (isBoardScreen || isNewsScreen || isAllotmentAlertsScreen) && !showSettingsSheet && !showContactDialog && !showExitDialog,
+            gesturesEnabled = (isBoardScreen || isUsBoardScreen || isNewsScreen || isAllotmentAlertsScreen) && !showSettingsSheet && !showContactDialog && !showExitDialog,
             drawerContent = {
                 AppNavigationDrawerSheet(
                     activeItem = activeDrawerItem,
@@ -599,6 +795,24 @@ fun AppNavigation(
                         scope.launch { drawerState.close() }
                         boardViewModel.refreshGmpNow()
                     },
+                    adminSession = authSession,
+                    userDisplayName = signedInUserProfile?.displayName.orEmpty(),
+                    investorCategory = signedInUserProfile?.categoryEnum ?: InvestorCategory.RETAIL,
+                    bookmarkedCount = uiState.bookmarkedIpoIds.size,
+                    activeOverrideCount = cachedOverrides.size,
+                    isAdminSigningIn = isAdminSigningIn,
+                    onOpenUserProfile = {
+                        scope.launch { drawerState.close() }
+                        navController.navigate(UserProfileRoute) { launchSingleTop = true }
+                    },
+                    onOpenAdminDashboard = {
+                        scope.launch { drawerState.close() }
+                        if (authSession.isAuthorizedAdmin) {
+                            navController.navigate(AdminDashboardRoute) { launchSingleTop = true }
+                        }
+                    },
+                    onAdminGoogleSignIn = { triggerGoogleSignIn(openProfileOnSuccess = false) },
+                    onAdminSignOut = ::triggerSignOut,
                 )
             },
         ) {
@@ -640,7 +854,8 @@ fun AppNavigation(
                                 ) {
                                     bottomItems.forEach { item ->
                                         val selected = when (item.action) {
-                                            is BottomBarAction.Board -> isBoardScreen && uiState.boardFilter == item.action.filter
+                                            BottomBarAction.India -> isBoardScreen
+                                            BottomBarAction.Usa -> isUsBoardScreen
                                             BottomBarAction.Allotment -> isAllotmentAlertsScreen
                                             BottomBarAction.News -> isNewsScreen
                                         }
@@ -673,14 +888,14 @@ fun AppNavigation(
                                                                 Color.Transparent
                                                             },
                                                         )
-                                                        .padding(horizontal = 10.dp, vertical = 3.dp),
+                                                        .padding(horizontal = 12.dp, vertical = 3.dp),
                                                     contentAlignment = Alignment.Center,
                                                 ) {
                                                     Icon(
                                                         imageVector = if (selected) item.selectedIcon else item.unselectedIcon,
                                                         contentDescription = item.label,
                                                         tint = contentColor,
-                                                        modifier = Modifier.size(19.dp),
+                                                        modifier = Modifier.size(20.dp),
                                                     )
                                                 }
                                                 if (showNewsBadge) {
@@ -719,9 +934,18 @@ fun AppNavigation(
                                 }
                             }
                         }
-                    }
-                }
-            },
+                        }
+                        } else if (!useNavigationRail && showSecondaryPageBanner && canRequestAds) {
+                            Box(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
+                                AdBannerSlot(
+                                    placement = BannerAdPlacement.SECONDARY,
+                                    onAdImpression = { boardViewModel.recordAdImpression() },
+                                    slotTag = "app_page_banner_ad_2",
+                                    containerTag = "app_page_banner_ad_2_container",
+                                )
+                            }
+                        }
+                    },
         ) { innerPadding ->
             Row(
                 modifier = Modifier
@@ -737,7 +961,8 @@ fun AppNavigation(
                     ) {
                         bottomItems.forEach { item ->
                             val selected = when (item.action) {
-                                is BottomBarAction.Board -> isBoardScreen && uiState.boardFilter == item.action.filter
+                                BottomBarAction.India -> isBoardScreen
+                                BottomBarAction.Usa -> isUsBoardScreen
                                 BottomBarAction.Allotment -> isAllotmentAlertsScreen
                                 BottomBarAction.News -> isNewsScreen
                             }
@@ -770,7 +995,7 @@ fun AppNavigation(
                         modifier = Modifier
                             .weight(1f)
                             .then(
-                                if (!isDetailScreen) {
+                                if (!isDetailScreen && !isUsDetailScreen) {
                                     Modifier.windowInsetsPadding(WindowInsets.statusBars)
                                 } else {
                                     Modifier
@@ -782,6 +1007,19 @@ fun AppNavigation(
                             startDestination = IpoBoardRoute,
                         ) {
                             composable<IpoBoardRoute> {
+                                DisposableEffect(boardViewModel) {
+                                    boardViewModel.onBoardVisible()
+                                    onDispose {
+                                        boardViewModel.onBoardHidden()
+                                    }
+                                }
+                                LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+                                    boardViewModel.onBoardVisible()
+                                }
+                                LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) {
+                                    boardViewModel.onBoardHidden()
+                                }
+
                                 IpoBoardScreen(
                                     uiState = uiState,
                                     onSelectBoardFilter = boardViewModel::setBoardFilter,
@@ -799,10 +1037,100 @@ fun AppNavigation(
                                     onOpenCalendar = {
                                         navController.navigate(IpoEventCalendarRoute) { launchSingleTop = true }
                                     },
+                                    onOpenCompare = { initialIpoId ->
+                                        navController.navigate(CompareIposRoute(initialIpoId)) {
+                                            launchSingleTop = true
+                                        }
+                                    },
                                     onSelectBoardSortMode = boardViewModel::setBoardSortMode,
                                     onToggleSavedOnly = boardViewModel::setSavedOnlyFilter,
-                                    onToggleBookmarkIpo = boardViewModel::toggleBookmarkIpo,
-                                    onToggleCompactCards = boardViewModel::setCompactCardsEnabled,
+                                    onToggleBookmarkIpo = { ipoId ->
+                                        val nextBookmarks = if (ipoId in uiState.bookmarkedIpoIds) {
+                                            uiState.bookmarkedIpoIds - ipoId
+                                        } else {
+                                            uiState.bookmarkedIpoIds + ipoId
+                                        }
+                                        boardViewModel.toggleBookmarkIpo(ipoId)
+                                        if (authSession.isSignedIn) {
+                                            scope.launch {
+                                                resolvedUserProfileRepository.syncBookmarksToCloud(
+                                                    bookmarkedIpoIds = nextBookmarks,
+                                                    currentPrefs = CloudSyncedPrefsSnapshot(
+                                                        themePreference = uiState.themePreference,
+                                                        compactCards = uiState.compactCardsEnabled,
+                                                        notifyNewIpo = uiState.notifyNewIpoEnabled,
+                                                        notifyOpenIpo = uiState.notifyOpenIpoEnabled,
+                                                        notifyAllotment = allotmentUiState.notifyAllotmentEnabled,
+                                                        notifyNewsAlerts = uiState.notifyNewsAlertsEnabled,
+                                                    ),
+                                                )
+                                            }
+                                        }
+                                    },
+                                    onToggleCompactCards = { enabled ->
+                                        boardViewModel.setCompactCardsEnabled(enabled)
+                                        if (authSession.isSignedIn) {
+                                            scope.launch {
+                                                resolvedUserProfileRepository.syncPreferencesToCloud(
+                                                    preferences = CloudSyncedPrefsSnapshot(
+                                                        themePreference = uiState.themePreference,
+                                                        compactCards = enabled,
+                                                        notifyNewIpo = uiState.notifyNewIpoEnabled,
+                                                        notifyOpenIpo = uiState.notifyOpenIpoEnabled,
+                                                        notifyAllotment = allotmentUiState.notifyAllotmentEnabled,
+                                                        notifyNewsAlerts = uiState.notifyNewsAlertsEnabled,
+                                                    ),
+                                                    currentBookmarks = uiState.bookmarkedIpoIds,
+                                                )
+                                            }
+                                        }
+                                    },
+                                )
+                            }
+
+                            composable<UsIpoBoardRoute> {
+                                val usaNewsAlertsActive = uiState.notifyNewsAlertsEnabled &&
+                                    NewsCategory.USA_IPOS in uiState.newsAlertCategories
+                                UsIpoBoardScreen(
+                                    uiState = usIpoUiState,
+                                    onEnsureLoaded = usIpoViewModel::ensureLoaded,
+                                    onSelectStatus = usIpoViewModel::selectStatus,
+                                    onSearchQueryChange = usIpoViewModel::setSearchQuery,
+                                    onToggleSearch = usIpoViewModel::setSearchActive,
+                                    onRefresh = { usIpoViewModel.refresh(force = true) },
+                                    onOpenMenu = { scope.launch { drawerState.open() } },
+                                    onUsIpoClick = { dealId ->
+                                        navController.navigate(UsIpoDetailRoute(dealId))
+                                    },
+                                    usaNewsAlertsEnabled = usaNewsAlertsActive,
+                                    onToggleUsaNewsAlerts = { enabled ->
+                                        boardViewModel.setUsaNewsAlertsEnabled(enabled)
+                                        if (enabled) requestNotificationsIfNeeded()
+                                    },
+                                    onSendTestUsaNewsAlert = {
+                                        if (hasNotificationPermission) {
+                                            boardViewModel.sendSampleUsaNewsNotification()
+                                        } else {
+                                            requestNotificationsIfNeeded()
+                                        }
+                                    },
+                                    onAdImpression = { boardViewModel.recordAdImpression() },
+                                )
+                            }
+
+                            composable<UsIpoDetailRoute> { backStackEntry ->
+                                val args = backStackEntry.toRoute<UsIpoDetailRoute>()
+                                val detailFlow = remember(args.dealId) {
+                                    usIpoViewModel.observeDetail(args.dealId)
+                                }
+                                val detailIpo by detailFlow.collectAsStateWithLifecycle(initialValue = null)
+                                UsIpoDetailScreen(
+                                    ipo = detailIpo,
+                                    isLookingUpSecFiling = args.dealId in secLookupInProgressIds,
+                                    onEnsureSecFilingResolved = {
+                                        usIpoViewModel.ensureSecFilingResolved(args.dealId)
+                                    },
+                                    onBack = { navController.popBackStack() },
                                 )
                             }
 
@@ -825,6 +1153,10 @@ fun AppNavigation(
                                         if (enabled) requestNotificationsIfNeeded()
                                     },
                                     onToggleNewsAlertCategory = boardViewModel::toggleNewsAlertCategory,
+                                    onToggleUsaNewsAlerts = { enabled ->
+                                        boardViewModel.setUsaNewsAlertsEnabled(enabled)
+                                        if (enabled) requestNotificationsIfNeeded()
+                                    },
                                     onRequestNotificationPermission = ::requestNotificationsIfNeeded,
                                     onSendTestNewsAlert = {
                                         if (hasNotificationPermission) {
@@ -833,6 +1165,14 @@ fun AppNavigation(
                                             requestNotificationsIfNeeded()
                                         }
                                     },
+                                    onSendTestUsaNewsAlert = {
+                                        if (hasNotificationPermission) {
+                                            boardViewModel.sendSampleUsaNewsNotification()
+                                        } else {
+                                            requestNotificationsIfNeeded()
+                                        }
+                                    },
+                                    onAdImpression = { boardViewModel.recordAdImpression() },
                                 )
                             }
 
@@ -853,6 +1193,7 @@ fun AppNavigation(
                                     initialIpoId = args.initialIpoId,
                                     onIpoClick = ::openIpoDetail,
                                     onBack = { navController.popBackStack() },
+                                    onAdImpression = { boardViewModel.recordAdImpression() },
                                 )
                             }
 
@@ -966,6 +1307,7 @@ fun AppNavigation(
                                             vaultAuthError = null
                                         }
                                     },
+                                    onAdImpression = { boardViewModel.recordAdImpression() },
                                 )
                             }
 
@@ -975,6 +1317,7 @@ fun AppNavigation(
                                     onOpenAllotmentAlerts = {
                                         navController.navigate(AllotmentAlertsRoute()) { launchSingleTop = true }
                                     },
+                                    onAdImpression = { boardViewModel.recordAdImpression() },
                                 )
                             }
 
@@ -1008,9 +1351,27 @@ fun AppNavigation(
                                 val loadState by detailViewModel.loadState.collectAsStateWithLifecycle()
                                 val selectedTab by detailViewModel.selectedTab.collectAsStateWithLifecycle()
                                 val subscriptionSyncState by detailViewModel.subscriptionSyncState.collectAsStateWithLifecycle()
+                                val aiState by detailViewModel.aiState.collectAsStateWithLifecycle()
 
-                                LaunchedEffect(loadState.ipo?.id, loadState.ipo?.status) {
+                                LaunchedEffect(
+                                    loadState.ipo?.id,
+                                    loadState.ipo?.openDate,
+                                    loadState.ipo?.closeDate,
+                                    loadState.ipo?.listingDate,
+                                    loadState.ipo?.status,
+                                ) {
                                     loadState.ipo?.let { detailViewModel.onDetailScreenVisible(it) }
+                                }
+                                DisposableEffect(detailViewModel) {
+                                    onDispose {
+                                        detailViewModel.onDetailScreenHidden()
+                                    }
+                                }
+                                LifecycleEventEffect(Lifecycle.Event.ON_RESUME) {
+                                    loadState.ipo?.let { detailViewModel.onDetailScreenVisible(it) }
+                                }
+                                LifecycleEventEffect(Lifecycle.Event.ON_PAUSE) {
+                                    detailViewModel.onDetailScreenHidden()
                                 }
 
                                 IpoDetailScreen(
@@ -1052,15 +1413,134 @@ fun AppNavigation(
                                     onRefreshSubscription = {
                                         detailViewModel.refreshLiveSubscription(force = true)
                                     },
+                                    aiState = aiState,
+                                    onAskIpoAi = { question ->
+                                        loadState.ipo?.let { currentIpo ->
+                                            detailViewModel.askIpoAi(currentIpo, question)
+                                        }
+                                    },
+                                    onClearAiResponse = detailViewModel::clearAiResponse,
                                 )
+                            }
+
+                            composable<UserProfileRoute> {
+                                // Key UserProfileViewModel by authenticated UID so account switches /
+                                // sign-out cleanly dispose and recreate per-user Firestore listeners.
+                                key(authSession.uid) {
+                                    val userProfileViewModel: UserProfileViewModel = viewModel(
+                                        key = "user_profile_${authSession.uid}",
+                                        factory = UserProfileViewModel.Factory(
+                                            userId = authSession.uid,
+                                            fallbackDisplayName = authSession.displayName,
+                                            fallbackEmail = authSession.email,
+                                            ipoRepository = ipoRepository,
+                                            userProfileRepository = resolvedUserProfileRepository,
+                                            preferencesRepository = preferencesRepository,
+                                        ),
+                                    )
+                                    val profileUiState by userProfileViewModel.uiState.collectAsStateWithLifecycle()
+
+                                    UserProfileScreen(
+                                        uiState = profileUiState,
+                                        authErrorMessage = adminAuthError,
+                                        isSigningIn = isAdminSigningIn,
+                                        onBack = { navController.popBackStack() },
+                                        onGoogleSignInClick = { triggerGoogleSignIn(openProfileOnSuccess = false) },
+                                        onSignOutClick = ::triggerSignOut,
+                                        onSaveInvestorDetails = userProfileViewModel::saveInvestorDetails,
+                                        onOpenIpoDetail = ::openIpoDetail,
+                                        onRemoveBookmark = userProfileViewModel::removeBookmark,
+                                        onSelectTheme = userProfileViewModel::updateThemePreference,
+                                        onToggleCompactCards = userProfileViewModel::updateCompactCards,
+                                        onToggleNotifyNewIpo = { enabled ->
+                                            userProfileViewModel.updateNotifyNewIpo(enabled)
+                                            if (enabled) requestNotificationsIfNeeded()
+                                        },
+                                        onToggleNotifyOpenIpo = { enabled ->
+                                            userProfileViewModel.updateNotifyOpenIpo(enabled)
+                                            if (enabled) requestNotificationsIfNeeded()
+                                        },
+                                        onToggleNotifyAllotment = { enabled ->
+                                            userProfileViewModel.updateNotifyAllotment(enabled)
+                                            if (enabled) requestNotificationsIfNeeded()
+                                        },
+                                        onToggleNotifyNewsAlerts = { enabled ->
+                                            userProfileViewModel.updateNotifyNewsAlerts(enabled)
+                                            if (enabled) requestNotificationsIfNeeded()
+                                        },
+                                        onDeleteAccount = {
+                                            userProfileViewModel.deleteAccountAndCloudData(
+                                                onAccountDeleted = { confirmationMsg ->
+                                                    profileStatusBanner = confirmationMsg
+                                                    triggerSignOut()
+                                                },
+                                            )
+                                        },
+                                        externalStatusMessage = profileStatusBanner,
+                                        onClearExternalStatusMessage = { profileStatusBanner = null },
+                                        onClearFeedback = userProfileViewModel::clearFeedback,
+                                    )
+                                }
+                            }
+
+                            composable<AdminDashboardRoute> {
+                                // Strict role isolation: never expose Admin UI to guests or non-admin users.
+                                if (!authSession.isAuthorizedAdmin) {
+                                    LaunchedEffect(Unit) {
+                                        navController.popBackStack()
+                                    }
+                                } else {
+                                    key(authSession.uid) {
+                                        val adminViewModel: AdminDashboardViewModel = viewModel(
+                                            key = "admin_dashboard_${authSession.uid}",
+                                            factory = AdminDashboardViewModel.Factory(
+                                                ipoRepository = ipoRepository,
+                                                adminOverrideRepository = resolvedAdminOverrideRepository,
+                                                currentUserId = authSession.uid,
+                                                isAuthorizedAdmin = authSession.isAuthorizedAdmin,
+                                            ),
+                                        )
+                                        val adminUiState by adminViewModel.uiState.collectAsStateWithLifecycle()
+
+                                        AdminDashboardScreen(
+                                            authSession = authSession,
+                                            authErrorMessage = adminAuthError,
+                                            isSigningIn = isAdminSigningIn,
+                                            uiState = adminUiState,
+                                            onGoogleSignInClick = { triggerGoogleSignIn(openProfileOnSuccess = false) },
+                                            onSignOutClick = {
+                                                triggerSignOut()
+                                                navController.popBackStack()
+                                            },
+                                            onBack = { navController.popBackStack() },
+                                            onSearchQueryChange = adminViewModel::setSearchQuery,
+                                            onSelectFilter = adminViewModel::setFilter,
+                                            onRefreshCloudOverrides = adminViewModel::refreshCloudOverrides,
+                                            onSaveOverride = adminViewModel::saveManualOverride,
+                                            onToggleHideIpo = adminViewModel::toggleHideIpo,
+                                            onResetToLiveSync = adminViewModel::resetToLiveSync,
+                                            onClearFeedback = adminViewModel::clearFeedback,
+                                            onLoadAdminNote = adminViewModel::fetchAdminNote,
+                                        )
+                                    }
+                                }
                             }
                         }
                     }
 
-                    if (useNavigationRail && !hideChromeBars) {
+                    if (useNavigationRail && !hideChromeBars && canRequestAds) {
                         Box(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
                             AdBannerSlot(
                                 onAdImpression = { boardViewModel.recordAdImpression() },
+                            )
+                        }
+                    } else if (useNavigationRail && showSecondaryPageBanner && canRequestAds) {
+                        Box(modifier = Modifier.windowInsetsPadding(WindowInsets.navigationBars)) {
+                            AdBannerSlot(
+                                placement = BannerAdPlacement.SECONDARY,
+                                onAdImpression = { boardViewModel.recordAdImpression() },
+                                slotTag = "app_page_banner_ad_2",
+                                containerTag = "app_page_banner_ad_2_container",
                             )
                         }
                     }
@@ -1072,10 +1552,37 @@ fun AppNavigation(
     }
 
     if (showSettingsSheet) {
+        fun syncSheetPrefs(
+            themePref: ThemePreference = uiState.themePreference,
+            compactCards: Boolean = uiState.compactCardsEnabled,
+            notifyNewIpo: Boolean = uiState.notifyNewIpoEnabled,
+            notifyOpenIpo: Boolean = uiState.notifyOpenIpoEnabled,
+            notifyAllotment: Boolean = allotmentUiState.notifyAllotmentEnabled,
+            notifyNewsAlerts: Boolean = uiState.notifyNewsAlertsEnabled,
+        ) {
+            if (!authSession.isSignedIn) return
+            scope.launch {
+                resolvedUserProfileRepository.syncPreferencesToCloud(
+                    preferences = CloudSyncedPrefsSnapshot(
+                        themePreference = themePref,
+                        compactCards = compactCards,
+                        notifyNewIpo = notifyNewIpo,
+                        notifyOpenIpo = notifyOpenIpo,
+                        notifyAllotment = notifyAllotment,
+                        notifyNewsAlerts = notifyNewsAlerts,
+                    ),
+                    currentBookmarks = uiState.bookmarkedIpoIds,
+                )
+            }
+        }
+
         SettingsBottomSheet(
             currentTheme = uiState.themePreference,
             adImpressionCount = uiState.adImpressionCount,
-            onSelectTheme = boardViewModel::setThemePreference,
+            onSelectTheme = { pref ->
+                boardViewModel.setThemePreference(pref)
+                syncSheetPrefs(themePref = pref)
+            },
             onDismiss = { showSettingsSheet = false },
             notifyNewIpoEnabled = uiState.notifyNewIpoEnabled,
             notifyOpenIpoEnabled = uiState.notifyOpenIpoEnabled,
@@ -1084,18 +1591,22 @@ fun AppNavigation(
             hasNotificationPermission = hasNotificationPermission,
             onToggleNotifyNewIpo = { enabled ->
                 boardViewModel.setNotifyNewIpoEnabled(enabled)
+                syncSheetPrefs(notifyNewIpo = enabled)
                 if (enabled) requestNotificationsIfNeeded()
             },
             onToggleNotifyOpenIpo = { enabled ->
                 boardViewModel.setNotifyOpenIpoEnabled(enabled)
+                syncSheetPrefs(notifyOpenIpo = enabled)
                 if (enabled) requestNotificationsIfNeeded()
             },
             onToggleNotifyAllotment = { enabled ->
                 allotmentViewModel.setNotifyAllotmentEnabled(enabled)
+                syncSheetPrefs(notifyAllotment = enabled)
                 if (enabled) requestNotificationsIfNeeded()
             },
             onToggleNotifyNewsAlerts = { enabled ->
                 boardViewModel.setNotifyNewsAlertsEnabled(enabled)
+                syncSheetPrefs(notifyNewsAlerts = enabled)
                 if (enabled) requestNotificationsIfNeeded()
             },
             onOpenAllotmentAlerts = {
@@ -1112,12 +1623,21 @@ fun AppNavigation(
             },
             compactCardsEnabled = uiState.compactCardsEnabled,
             biometricLockEnabled = uiState.biometricLockEnabled,
-            onToggleCompactCards = boardViewModel::setCompactCardsEnabled,
+            onToggleCompactCards = { enabled ->
+                boardViewModel.setCompactCardsEnabled(enabled)
+                syncSheetPrefs(compactCards = enabled)
+            },
             onToggleBiometricLock = { enabled ->
                 boardViewModel.setBiometricLockEnabled(enabled)
                 if (!enabled) {
                     isVaultUnlocked = true
                     vaultAuthError = null
+                }
+            },
+            isPrivacyOptionsRequired = isPrivacyOptionsRequired,
+            onOpenPrivacyOptions = {
+                context.findHostActivity()?.let { activity ->
+                    ConsentManager.showPrivacyOptionsForm(activity)
                 }
             },
         )
@@ -1140,6 +1660,7 @@ fun AppNavigation(
                     context.findHostActivity()?.finish()
                 }
             },
+            onAdImpression = { boardViewModel.recordAdImpression() },
         )
     }
 }

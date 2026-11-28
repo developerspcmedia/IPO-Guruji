@@ -5,23 +5,37 @@ import android.util.Xml
 import com.example.data.model.BoardType
 import com.example.data.model.IpoDateUtils
 import com.example.data.model.IpoStatus
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
+import kotlinx.coroutines.suspendCancellableCoroutine
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
+import okhttp3.Call
+import okhttp3.Callback
+import okhttp3.Cookie
+import okhttp3.CookieJar
+import okhttp3.HttpUrl
 import okhttp3.OkHttpClient
 import okhttp3.Request
+import okhttp3.Response
 import org.json.JSONArray
 import org.json.JSONObject
 import org.xmlpull.v1.XmlPullParser
+import java.io.IOException
 import java.io.StringReader
 import java.text.SimpleDateFormat
 import java.util.Calendar
 import java.util.Date
 import java.util.Locale
+import java.util.TimeZone
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
+import java.util.concurrent.atomic.AtomicLong
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
 import kotlin.math.abs
 import kotlin.math.roundToInt
 
@@ -44,6 +58,8 @@ data class LiveGmpQuote(
     val hasExplicitGmp: Boolean = true,
     val verifiedProviders: Set<String> = IpoFilingVerifier.extractVerifiedProvidersFromLabel(sourceName),
     val isUnconfirmedOrRumored: Boolean = false,
+    val datePriorityRank: Int = LiveGmpRepository.datePriorityForSource(sourceName),
+    val listingDatePriorityRank: Int = datePriorityRank,
 ) {
     val distinctProviderCount: Int
         get() = verifiedProviders.size
@@ -62,16 +78,83 @@ data class LiveGmpSnapshot(
 class LiveGmpRepository(
     internal val enableNetworkFetch: Boolean = true,
 ) {
+    private val cookieJar = InMemorySessionCookieJar()
+    private val lastNseWarmupMs = AtomicLong(0L)
+
     private val httpClient: OkHttpClient by lazy {
         OkHttpClient.Builder()
-            .connectTimeout(5, TimeUnit.SECONDS)
-            .readTimeout(7, TimeUnit.SECONDS)
-            .callTimeout(9, TimeUnit.SECONDS)
+            .cookieJar(cookieJar)
+            .connectTimeout(4, TimeUnit.SECONDS)
+            .readTimeout(5, TimeUnit.SECONDS)
+            .callTimeout(7, TimeUnit.SECONDS)
             .build()
     }
 
+    private suspend fun executeCancellable(request: Request): Pair<Boolean, String> =
+        suspendCancellableCoroutine { continuation ->
+            val call = httpClient.newCall(request)
+            continuation.invokeOnCancellation {
+                call.cancel()
+            }
+            call.enqueue(
+                object : Callback {
+                    override fun onFailure(call: Call, e: IOException) {
+                        if (continuation.isActive) {
+                            continuation.resumeWithException(e)
+                        }
+                    }
+
+                    override fun onResponse(call: Call, response: Response) {
+                        response.use { res ->
+                            val ok = res.isSuccessful
+                            val body = if (ok) res.body?.string().orEmpty() else ""
+                            if (continuation.isActive) {
+                                continuation.resume(ok to body)
+                            }
+                        }
+                    }
+                },
+            )
+        }
+
+    private suspend fun ensureNseSessionWarm(nowMs: Long): Boolean {
+        val previous = lastNseWarmupMs.get()
+        if (nowMs - previous < NSE_WARMUP_INTERVAL_MS) return true
+
+        val warmupUrls = listOf(
+            "https://www.nseindia.com",
+            "https://www.nseindia.com/market-data/all-upcoming-issues-ipo",
+        )
+        var anySucceeded = false
+        for (url in warmupUrls) {
+            try {
+                val request = Request.Builder()
+                    .url(url)
+                    .header("User-Agent", BROWSER_USER_AGENT)
+                    .header("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+                    .header("Accept-Language", "en-IN,en;q=0.9")
+                    .header("Cache-Control", "no-cache")
+                    .build()
+                val (ok, _) = executeCancellable(request)
+                if (ok) anySucceeded = true
+            } catch (e: CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                // Continue trying next warmup URL; overall status determined by anySucceeded.
+            }
+        }
+        if (anySucceeded) {
+            lastNseWarmupMs.set(nowMs)
+        }
+        return anySucceeded
+    }
+
     suspend fun fetchLatestGmps(): LiveGmpSnapshot = withContext(Dispatchers.IO) {
-        val syncTime = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.US).format(Date())
+        val nowMs = System.currentTimeMillis()
+        val istZone = TimeZone.getTimeZone("Asia/Kolkata")
+        val syncTime = SimpleDateFormat("dd MMM yyyy, hh:mm a", Locale.US).apply {
+            timeZone = istZone
+        }.format(Date(nowMs))
         if (!enableNetworkFetch) {
             return@withContext LiveGmpSnapshot(
                 quotesByKey = emptyMap(),
@@ -81,7 +164,7 @@ class LiveGmpRepository(
             )
         }
 
-        val now = Calendar.getInstance()
+        val now = Calendar.getInstance(istZone).apply { timeInMillis = nowMs }
         val month = now.get(Calendar.MONTH) + 1
         val year = now.get(Calendar.YEAR)
         val fyStart = if (month >= 4) year else year - 1
@@ -96,11 +179,11 @@ class LiveGmpRepository(
         val prevMonthFormatted = String.format(Locale.US, "%02d", prevMonth)
 
         val investorGainJsonUrl =
-            "https://webnodejs.investorgain.com/cloud/report/data-read/331/1/$monthFormatted/$year/$fyParam/0/all?search=&v=1"
+            "https://webnodejs.investorgain.com/cloud/report/data-read/331/1/$monthFormatted/$year/$fyParam/0/all?search=&v=1&_ts=$nowMs"
         val investorGainPrevMonthUrl =
-            "https://webnodejs.investorgain.com/cloud/report/data-read/331/1/$prevMonthFormatted/$prevYear/$prevFyParam/0/all?search=&v=1"
+            "https://webnodejs.investorgain.com/cloud/report/data-read/331/1/$prevMonthFormatted/$prevYear/$prevFyParam/0/all?search=&v=1&_ts=$nowMs"
         val investorGainListedJsonUrl =
-            "https://webnodejs.investorgain.com/cloud/report/data-read/377/1/$monthFormatted/$year/$fyParam/0/all?search=&v=1"
+            "https://webnodejs.investorgain.com/cloud/report/data-read/377/1/$monthFormatted/$year/$fyParam/0/all?search=&v=1&_ts=$nowMs"
 
         val sourceTasks = listOf(
             SourceTask(
@@ -116,6 +199,7 @@ class LiveGmpRepository(
                 url = "https://www.nseindia.com/api/ipo-upcoming",
                 kind = SourceKind.NSE_JSON,
                 referer = "https://www.nseindia.com/market-data/all-upcoming-issues-ipo",
+                defaultStatus = IpoStatus.UPCOMING,
             ),
             SourceTask(
                 name = "InvestorGain",
@@ -143,10 +227,32 @@ class LiveGmpRepository(
                 kind = SourceKind.HTML_TABLE,
             ),
             SourceTask(
+                name = "Chittorgarh Upcoming",
+                priorityRank = 4,
+                url = "https://www.chittorgarh.com/report/ipo-in-india-list-main-board-sme/82/?a=upcoming",
+                kind = SourceKind.HTML_TABLE,
+                defaultStatus = IpoStatus.UPCOMING,
+            ),
+            SourceTask(
                 name = "IPOWatch Upcoming",
                 priorityRank = 5,
                 url = "https://ipowatch.in/upcoming-ipo-list-2026-mainboard-sme-ipo/",
                 kind = SourceKind.HTML_TABLE,
+                defaultStatus = IpoStatus.UPCOMING,
+            ),
+            SourceTask(
+                name = "IPOWatch Upcoming List",
+                priorityRank = 5,
+                url = "https://ipowatch.in/upcoming-ipo-list/",
+                kind = SourceKind.HTML_TABLE,
+                defaultStatus = IpoStatus.UPCOMING,
+            ),
+            SourceTask(
+                name = "IPO Central Upcoming",
+                priorityRank = 6,
+                url = "https://ipocentral.in/upcoming-ipo-list/",
+                kind = SourceKind.HTML_TABLE,
+                defaultStatus = IpoStatus.UPCOMING,
             ),
             SourceTask(
                 name = "IPOJi",
@@ -205,16 +311,54 @@ class LiveGmpRepository(
             ),
         )
 
-        val perSourceResults = withTimeoutOrNull(9_000L) {
-            coroutineScope {
-                sourceTasks.map { task ->
-                    async {
-                        val quotes = runCatching { fetchFromSource(task) }.getOrDefault(emptyList())
-                        task.name to quotes
+        fetchSourcesInParallel(
+            sourceTasks = sourceTasks,
+            nowMs = nowMs,
+            syncTime = syncTime,
+        )
+    }
+
+    internal suspend fun fetchSourcesInParallel(
+        sourceTasks: List<SourceTask>,
+        nowMs: Long,
+        syncTime: String,
+        perSourceTimeoutMs: Long = PER_SOURCE_TIMEOUT_MS,
+        nseWarmupTimeoutMs: Long = NSE_WARMUP_TIMEOUT_MS,
+        nseWarmupRunner: suspend (Long) -> Boolean = ::ensureNseSessionWarm,
+        sourceFetcher: suspend (SourceTask) -> List<LiveGmpQuote> = ::fetchFromSource,
+    ): LiveGmpSnapshot {
+        val perSourceResults = coroutineScope {
+            val nseWarmupDeferred = async {
+                withTimeoutOrNull(nseWarmupTimeoutMs) {
+                    try {
+                        nseWarmupRunner(nowMs)
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (_: Exception) {
+                        false
                     }
-                }.awaitAll()
+                } ?: false
             }
-        }.orEmpty()
+
+            sourceTasks.map { task ->
+                async {
+                    val quotes = withTimeoutOrNull(perSourceTimeoutMs) {
+                        try {
+                            if (task.kind == SourceKind.NSE_JSON) {
+                                val nseReady = nseWarmupDeferred.await()
+                                if (!nseReady) return@withTimeoutOrNull emptyList()
+                            }
+                            sourceFetcher(task)
+                        } catch (e: CancellationException) {
+                            throw e
+                        } catch (_: Exception) {
+                            emptyList()
+                        }
+                    }.orEmpty()
+                    task.name to quotes
+                }
+            }.awaitAll()
+        }
 
         val activeSources = mutableListOf<String>()
         val collectedQuotes = mutableListOf<LiveGmpQuote>()
@@ -234,7 +378,7 @@ class LiveGmpRepository(
             mergedByKey[quote.normalizedKey] = quote
         }
 
-        LiveGmpSnapshot(
+        return LiveGmpSnapshot(
             quotesByKey = mergedByKey,
             allQuotes = mergedList,
             activeSources = activeSources.distinct(),
@@ -242,31 +386,33 @@ class LiveGmpRepository(
         )
     }
 
-    private fun fetchFromSource(task: SourceTask): List<LiveGmpQuote> {
+    private suspend fun fetchFromSource(task: SourceTask): List<LiveGmpQuote> {
         val builder = Request.Builder()
             .url(task.url)
-            .header(
-                "User-Agent",
-                "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36",
-            )
+            .header("User-Agent", BROWSER_USER_AGENT)
             .header("Accept-Language", "en-IN,en;q=0.9")
+            .header("Cache-Control", "no-cache")
+            .header("Pragma", "no-cache")
+
+        if (task.kind == SourceKind.NSE_JSON) {
+            builder.header("Accept", "application/json, text/plain, */*")
+            builder.header("X-Requested-With", "XMLHttpRequest")
+        }
 
         if (task.referer != null) {
             builder.header("Referer", task.referer)
             builder.header("Origin", task.referer.trimEnd('/'))
         }
 
-        val body = httpClient.newCall(builder.build()).execute().use { response ->
-            if (!response.isSuccessful) return emptyList()
-            response.body?.string().orEmpty()
-        }
-        if (body.isBlank()) return emptyList()
+        val (ok, body) = executeCancellable(builder.build())
+        if (!ok || body.isBlank()) return emptyList()
 
         return when (task.kind) {
             SourceKind.NSE_JSON -> parseNseIpoJson(
                 rawJson = body,
                 sourceName = task.name,
                 priorityRank = task.priorityRank,
+                defaultStatus = task.defaultStatus,
             )
             SourceKind.INVESTORGAIN_JSON -> parseInvestorGainJson(
                 rawJson = body,
@@ -310,7 +456,9 @@ class LiveGmpRepository(
             }
         }
 
-        if (a.normalizedKey == b.normalizedKey) return true
+        if (a.normalizedKey == b.normalizedKey) {
+            return a.boardType == b.boardType || a.priceHigh == 0 || b.priceHigh == 0
+        }
         val shorter = if (a.normalizedKey.length <= b.normalizedKey.length) a.normalizedKey else b.normalizedKey
         val longer = if (a.normalizedKey.length > b.normalizedKey.length) a.normalizedKey else b.normalizedKey
         if (shorter.length >= 7 && longer.startsWith(shorter)) {
@@ -398,14 +546,122 @@ class LiveGmpRepository(
         val bestHigh = preferred.priceHigh.takeIf { it > 0 } ?: fallback.priceHigh
         val bestLot = preferred.lotSize.takeIf { it > 0 } ?: fallback.lotSize
         val bestIssueSize = preferred.issueSizeCr.takeIf { it > 0.0 } ?: fallback.issueSizeCr
-        val bestOpen = IpoFilingVerifier.sanitizeConfirmedDate(preferred.openDate)
-            .ifBlank { IpoFilingVerifier.sanitizeConfirmedDate(fallback.openDate) }
-        val bestClose = IpoFilingVerifier.sanitizeConfirmedDate(preferred.closeDate)
-            .ifBlank { IpoFilingVerifier.sanitizeConfirmedDate(fallback.closeDate) }
-        val bestListing = IpoFilingVerifier.sanitizeConfirmedDate(preferred.listingDate)
-            .ifBlank { IpoFilingVerifier.sanitizeConfirmedDate(fallback.listingDate) }
+
+        // Dedicated official-first date authority (NSE/BSE > Chittorgarh > InvestorGain > IPOWatch > others)
+        // independent of GMP priority so official exchange/filing calendars never get overwritten by GMP trackers.
+        val datePreferred = if (incoming.datePriorityRank < primary.datePriorityRank) incoming else primary
+        val dateFallback = if (datePreferred === primary) incoming else primary
+
+        val (prefOpen, prefClose, prefListing) = validateScheduleTriple(
+            datePreferred.openDate,
+            datePreferred.closeDate,
+            datePreferred.listingDate,
+        )
+        val (fbOpen, fbClose, fbListing) = validateScheduleTriple(
+            dateFallback.openDate,
+            dateFallback.closeDate,
+            dateFallback.listingDate,
+        )
+
+        val candidateOpen: String
+        val candidateClose: String
+        val resolvedDatePriorityRank: Int
+        when {
+            prefOpen.isNotBlank() && prefClose.isNotBlank() -> {
+                candidateOpen = prefOpen
+                candidateClose = prefClose
+                resolvedDatePriorityRank = datePreferred.datePriorityRank
+            }
+            prefOpen.isNotBlank() || prefClose.isNotBlank() -> {
+                val filledOpen = prefOpen.ifBlank { fbOpen }
+                val filledClose = prefClose.ifBlank { fbClose }
+                val filledOpenMs = IpoDateUtils.parseFlexibleDateMs(filledOpen)
+                val filledCloseMs = IpoDateUtils.parseFlexibleDateMs(filledClose)
+                if (filledOpenMs != null && filledCloseMs != null && IpoDateUtils.isValidBiddingWindow(filledOpenMs, filledCloseMs)) {
+                    candidateOpen = filledOpen
+                    candidateClose = filledClose
+                    resolvedDatePriorityRank = datePreferred.datePriorityRank
+                } else if (fbOpen.isNotBlank() && fbClose.isNotBlank()) {
+                    candidateOpen = fbOpen
+                    candidateClose = fbClose
+                    resolvedDatePriorityRank = dateFallback.datePriorityRank
+                } else {
+                    candidateOpen = prefOpen
+                    candidateClose = prefClose
+                    resolvedDatePriorityRank = datePreferred.datePriorityRank
+                }
+            }
+            fbOpen.isNotBlank() || fbClose.isNotBlank() -> {
+                candidateOpen = fbOpen
+                candidateClose = fbClose
+                resolvedDatePriorityRank = dateFallback.datePriorityRank
+            }
+            else -> {
+                candidateOpen = ""
+                candidateClose = ""
+                resolvedDatePriorityRank = minOf(primary.datePriorityRank, incoming.datePriorityRank)
+            }
+        }
+
+        val listingPreferred = if (incoming.listingDatePriorityRank < primary.listingDatePriorityRank) incoming else primary
+        val listingFallback = if (listingPreferred === primary) incoming else primary
+        val prefListValid = IpoFilingVerifier.sanitizeConfirmedDate(listingPreferred.listingDate)
+        val fbListValid = IpoFilingVerifier.sanitizeConfirmedDate(listingFallback.listingDate)
+
+        val candidateListing: String
+        val resolvedListingPriorityRank: Int
+        when {
+            prefListValid.isNotBlank() && isListingConsistentWithWindow(prefListValid, candidateOpen, candidateClose) -> {
+                candidateListing = prefListValid
+                resolvedListingPriorityRank = listingPreferred.listingDatePriorityRank
+            }
+            fbListValid.isNotBlank() && isListingConsistentWithWindow(fbListValid, candidateOpen, candidateClose) -> {
+                candidateListing = fbListValid
+                resolvedListingPriorityRank = listingFallback.listingDatePriorityRank
+            }
+            prefListValid.isNotBlank() -> {
+                candidateListing = prefListValid
+                resolvedListingPriorityRank = listingPreferred.listingDatePriorityRank
+            }
+            fbListValid.isNotBlank() -> {
+                candidateListing = fbListValid
+                resolvedListingPriorityRank = listingFallback.listingDatePriorityRank
+            }
+            else -> {
+                candidateListing = ""
+                resolvedListingPriorityRank = minOf(primary.listingDatePriorityRank, incoming.listingDatePriorityRank)
+            }
+        }
+
+        val (bestOpen, bestClose, bestListing) = validateScheduleTriple(
+            candidateOpen,
+            candidateClose,
+            candidateListing,
+        )
+
         val bestSub = preferred.totalSubX.takeIf { it > 0.0 } ?: fallback.totalSubX
-        val bestStatus = preferred.status ?: fallback.status
+        val effectiveHigh = maxOf(bestLow, bestHigh)
+        val bestStatus = if (bestOpen.isNotBlank() || bestClose.isNotBlank() || bestListing.isNotBlank()) {
+            val closedHint = if (
+                (primary.status == IpoStatus.CLOSED || incoming.status == IpoStatus.CLOSED) &&
+                bestOpen.isBlank() && bestClose.isBlank()
+            ) {
+                "listed"
+            } else {
+                ""
+            }
+            inferStatus(
+                statusHint = closedHint,
+                openDate = bestOpen,
+                closeDate = bestClose,
+                priceHigh = effectiveHigh,
+                listingDate = bestListing,
+            )
+        } else {
+            val rawStatus = preferred.status ?: fallback.status
+            if (rawStatus == IpoStatus.LIVE) IpoStatus.UPCOMING else rawStatus
+        }
+
         val bestBoard = if (preferred.boardType == BoardType.SME || fallback.boardType == BoardType.SME) {
             BoardType.SME
         } else {
@@ -426,7 +682,7 @@ class LiveGmpRepository(
             companyName = bestName,
             gmpRupees = resolvedGmp,
             priceLow = bestLow,
-            priceHigh = maxOf(bestLow, bestHigh),
+            priceHigh = effectiveHigh,
             lotSize = bestLot,
             issueSizeCr = bestIssueSize,
             openDate = bestOpen,
@@ -439,6 +695,8 @@ class LiveGmpRepository(
             hasExplicitGmp = resolvedHasGmp,
             verifiedProviders = combinedProviders,
             isUnconfirmedOrRumored = hardRejected,
+            datePriorityRank = resolvedDatePriorityRank,
+            listingDatePriorityRank = resolvedListingPriorityRank,
         )
     }
 
@@ -446,6 +704,7 @@ class LiveGmpRepository(
         rawJson: String,
         sourceName: String = "NSE India",
         priorityRank: Int = 0,
+        defaultStatus: IpoStatus? = null,
     ): List<LiveGmpQuote> {
         val trimmed = rawJson.trim()
         val dataArray: JSONArray = when {
@@ -485,17 +744,31 @@ class LiveGmpRepository(
                 else -> parseCroresValue(rawSizeText)
             }
 
-            val openDate = IpoFilingVerifier.sanitizeConfirmedDate(row.optString("issueStartDate"))
-            val closeDate = IpoFilingVerifier.sanitizeConfirmedDate(row.optString("issueEndDate"))
+            val (openDate, closeDate, listingDate) = validateScheduleTriple(
+                row.optString("issueStartDate"),
+                row.optString("issueEndDate"),
+                row.optString("listingDate"),
+            )
             val statusText = row.optString("status", "")
             val boardType = if (series == "SME" || series == "SM") {
                 BoardType.SME
             } else {
                 detectBoardType(rawName, series, pLow, lotSize)
             }
-            val status = inferStatus("$rawName $statusText", openDate, closeDate, pHigh)
+            val inferredStatus = inferStatus("$rawName $statusText", openDate, closeDate, pHigh, listingDate)
+            val status = when {
+                defaultStatus == IpoStatus.UPCOMING -> {
+                    if (openDate.isNotBlank() || closeDate.isNotBlank() || listingDate.isNotBlank()) {
+                        inferredStatus
+                    } else {
+                        IpoStatus.UPCOMING
+                    }
+                }
+                defaultStatus != null -> defaultStatus
+                else -> inferredStatus
+            }
             val isUnconfirmed = IpoFilingVerifier.isHardRejectedStatus("$rawName $statusText") ||
-                IpoFilingVerifier.containsUnfiledOrRumoredMarkers(rawName)
+                (status != IpoStatus.UPCOMING && IpoFilingVerifier.containsUnfiledOrRumoredMarkers(rawName))
             val normKey = normalizeCompanyKey(companyName)
             if (normKey.isBlank()) continue
 
@@ -510,7 +783,7 @@ class LiveGmpRepository(
                     issueSizeCr = issueSizeCr,
                     openDate = openDate,
                     closeDate = closeDate,
-                    listingDate = "",
+                    listingDate = listingDate,
                     boardType = boardType,
                     status = status,
                     totalSubX = parseSubMultiplier(row.optString("noOfTime", "")),
@@ -519,6 +792,7 @@ class LiveGmpRepository(
                     hasExplicitGmp = false,
                     verifiedProviders = IpoFilingVerifier.extractVerifiedProvidersFromLabel(sourceName),
                     isUnconfirmedOrRumored = isUnconfirmed,
+                    datePriorityRank = datePriorityForSource(sourceName),
                 ),
             )
         }
@@ -551,7 +825,12 @@ class LiveGmpRepository(
             val companyName = sanitizeCompanyName(rawName)
             if (companyName.length < 3) continue
 
-            val priceText = findField(map, "issue price", "price")
+            val priceText = findFieldExcluding(
+                map = map,
+                exactKeys = listOf("issue price", "ipo price", "offer price", "price", "price band"),
+                includeTokens = listOf("price"),
+                excludeTokens = listOf("list", "cmp", "gmp", "est", "expected", "current", "open", "close"),
+            )
             val (pLow, pHigh) = parsePriceRange(priceText)
             val listingPriceText = findField(map, "listing price", "list price", "listing day", "cmp")
             val lAtPrice = Regex("L@\\s*([\\d,]+(?:\\.\\d+)?)", RegexOption.IGNORE_CASE)
@@ -565,9 +844,70 @@ class LiveGmpRepository(
 
             val gmpText = findField(map, "gmp", "~gmp", "listing gain")
             val parsedGmp = parseSignedRupees(gmpText)
-            val openDate = IpoFilingVerifier.sanitizeConfirmedDate(findField(map, "open"))
-            val closeDate = IpoFilingVerifier.sanitizeConfirmedDate(findField(map, "close"))
-            val listingDate = IpoFilingVerifier.sanitizeConfirmedDate(findField(map, "listing date", "listing"))
+            val rawOpenDate = findDateField(
+                map = map,
+                exactKeys = listOf(
+                    "open", "open date", "open_date", "issue open", "issue_open",
+                    "ipo open", "offer open", "bid start", "start date", "start_date", "~open_date",
+                ),
+                includeTokens = listOf("open", "start"),
+                excludeTokens = listOf(
+                    "price", "cmp", "gmp", "gain", "est", "expected", "percent", "%",
+                    "sub", "status", "update", "url", "str_", "listing", "list",
+                    "close", "end", "high", "low", "allot", "refund",
+                ),
+            )
+            val rawCloseDate = findDateField(
+                map = map,
+                exactKeys = listOf(
+                    "close", "close date", "close_date", "issue close", "issue_close",
+                    "ipo close", "offer close", "bid close", "end date", "end_date", "~close_date",
+                ),
+                includeTokens = listOf("close", "end"),
+                excludeTokens = listOf(
+                    "price", "cmp", "gmp", "gain", "est", "expected", "percent", "%",
+                    "sub", "status", "update", "url", "str_", "listing", "list",
+                    "open", "start", "high", "low", "allot", "refund",
+                ),
+            )
+            val rawListingDate = findDateField(
+                map = map,
+                exactKeys = listOf(
+                    "listing", "listing date", "listing_date", "list date", "list_date", "~listing_date",
+                ),
+                includeTokens = listOf("listing", "list date"),
+                excludeTokens = listOf(
+                    "price", "cmp", "gmp", "gain", "est", "expected", "percent", "%",
+                    "sub", "status", "update", "url", "str_", "open", "close",
+                    "day", "high", "low",
+                ),
+            )
+
+            var extractedOpen = IpoFilingVerifier.sanitizeConfirmedDate(rawOpenDate)
+            var extractedClose = IpoFilingVerifier.sanitizeConfirmedDate(rawCloseDate)
+            if (extractedOpen.isBlank() || extractedClose.isBlank()) {
+                val combinedRangeRaw = findDateField(
+                    map = map,
+                    exactKeys = listOf("ipo date", "offer date", "issue date", "bidding date", "date"),
+                    includeTokens = listOf("ipo date", "offer date", "issue date", "bidding date", "date"),
+                    excludeTokens = listOf(
+                        "listing", "list", "allot", "refund", "credit", "demat", "update",
+                        "drhp", "rhp", "fil", "price", "gmp", "gain", "est", "sub", "status", "url", "str_",
+                    ),
+                    allowDateRange = true,
+                )
+                if (combinedRangeRaw.isNotBlank()) {
+                    val (rangeOpen, rangeClose) = IpoDateUtils.parseDateRange(combinedRangeRaw)
+                    if (extractedOpen.isBlank()) extractedOpen = rangeOpen
+                    if (extractedClose.isBlank()) extractedClose = rangeClose
+                }
+            }
+
+            val (openDate, closeDate, listingDate) = validateScheduleTriple(
+                extractedOpen,
+                extractedClose,
+                rawListingDate,
+            )
             val issueSizeCr = parseCroresValue(findField(map, "size", "issue_size", "ipo_size", "total_issue"))
             val lotSize = parsePositiveInt(findField(map, "lot")) ?: 0
             val subX = parseSubMultiplier(findField(map, "sub"))
@@ -576,7 +916,7 @@ class LiveGmpRepository(
             val boardType = defaultBoardType ?: detectBoardType(rawName, categoryText, pLow, lotSize)
             val status = defaultStatus ?: inferStatus(statusHint, openDate, closeDate, pHigh, listingDate)
             val isUnconfirmed = IpoFilingVerifier.isHardRejectedStatus(statusHint) ||
-                IpoFilingVerifier.containsUnfiledOrRumoredMarkers(rawName)
+                (status != IpoStatus.UPCOMING && IpoFilingVerifier.containsUnfiledOrRumoredMarkers(rawName))
 
             val resolvedGmp: Int
             val hasExplicitGmp: Boolean
@@ -593,7 +933,13 @@ class LiveGmpRepository(
                     resolvedGmp = listingPrice - pHigh
                     hasExplicitGmp = true
                 }
-                status == IpoStatus.CLOSED || pHigh > 0 || issueSizeCr > 0.0 || listingDate.isNotBlank() -> {
+                status == IpoStatus.CLOSED ||
+                    status == IpoStatus.UPCOMING ||
+                    status == IpoStatus.PRE_APPLY ||
+                    pHigh > 0 ||
+                    issueSizeCr > 0.0 ||
+                    listingDate.isNotBlank() ||
+                    openDate.isNotBlank() -> {
                     resolvedGmp = 0
                     hasExplicitGmp = false
                 }
@@ -643,11 +989,12 @@ class LiveGmpRepository(
 
         tableRegex.findAll(html).forEach { tableMatch ->
             val tableBody = tableMatch.groupValues[1]
+            val minColumns = if (defaultStatus == IpoStatus.UPCOMING) 2 else 3
             val rows = rowRegex.findAll(tableBody).map { rowMatch ->
                 cellRegex.findAll(rowMatch.groupValues[1]).map { cellMatch ->
                     cleanHtml(cellMatch.groupValues[2])
                 }.toList()
-            }.filter { it.size >= 3 }.toList()
+            }.filter { it.size >= minColumns }.toList()
 
             if (rows.size < 2) return@forEach
 
@@ -658,8 +1005,20 @@ class LiveGmpRepository(
                     joined.contains("price") ||
                     joined.contains("issue size") ||
                     joined.contains("ipo size") ||
+                    joined.contains("size") ||
                     joined.contains("open") ||
-                    joined.contains("listing")
+                    joined.contains("listing") ||
+                    (defaultStatus == IpoStatus.UPCOMING && (
+                        joined.contains("date") ||
+                            joined.contains("drhp") ||
+                            joined.contains("rhp") ||
+                            joined.contains("status") ||
+                            joined.contains("exchange") ||
+                            joined.contains("board") ||
+                            joined.contains("type") ||
+                            joined.contains("expected") ||
+                            joined.contains("filing")
+                        ))
                 hasNameCol && hasMarketCol
             }
             if (headerIndexRow < 0) return@forEach
@@ -682,23 +1041,89 @@ class LiveGmpRepository(
             }
             val sizeIdx = headers.indexOfFirst { it.contains("size") }
             val lotIdx = headers.indexOfFirst { it.contains("lot") }
-            val openIdx = headers.indexOfFirst { it.contains("open") && !it.contains("close") && !it.contains("list") }
-            val closeIdx = headers.indexOfFirst { it.contains("close") && !it.contains("list") }
-            val listingIdx = headers.indexOfFirst { it.contains("list") && it.contains("date") }
-                .let { if (it >= 0) it else headers.indexOfFirst { h -> h.contains("list") && !h.contains("price") && !h.contains("gain") } }
-            val dateIdx = headers.indexOfFirst { it.contains("date") || (it.contains("open") && !it.contains("list")) }
+            val openIdx = headers.indexOfFirst { h ->
+                h.contains("open") &&
+                    !h.contains("close") &&
+                    !h.contains("list") &&
+                    !h.contains("price") &&
+                    !h.contains("gain") &&
+                    !h.contains("status") &&
+                    !h.contains("gmp") &&
+                    !h.contains("sub") &&
+                    !h.contains("cmp") &&
+                    !h.contains("update")
+            }
+            val closeIdx = headers.indexOfFirst { h ->
+                h.contains("close") &&
+                    !h.contains("open") &&
+                    !h.contains("list") &&
+                    !h.contains("price") &&
+                    !h.contains("gain") &&
+                    !h.contains("status") &&
+                    !h.contains("gmp") &&
+                    !h.contains("sub") &&
+                    !h.contains("cmp") &&
+                    !h.contains("update")
+            }
+            val listingIdx = headers.indexOfFirst { h ->
+                h.contains("list") &&
+                    h.contains("date") &&
+                    !h.contains("price") &&
+                    !h.contains("gain") &&
+                    !h.contains("est") &&
+                    !h.contains("open") &&
+                    !h.contains("close")
+            }.let { idx ->
+                if (idx >= 0) {
+                    idx
+                } else {
+                    headers.indexOfFirst { h ->
+                        h.contains("list") &&
+                            !h.contains("price") &&
+                            !h.contains("gain") &&
+                            !h.contains("est") &&
+                            !h.contains("open") &&
+                            !h.contains("close") &&
+                            !h.contains("cmp") &&
+                            !h.contains("%") &&
+                            !h.contains("gmp") &&
+                            !h.contains("day")
+                    }
+                }
+            }
+            val dateIdx = headers.indexOfFirst { h ->
+                (h.contains("date") || (h.contains("open") && !h.contains("list"))) &&
+                    !h.contains("list") &&
+                    !h.contains("drhp") &&
+                    !h.contains("rhp") &&
+                    !h.contains("fil") &&
+                    !h.contains("allot") &&
+                    !h.contains("refund") &&
+                    !h.contains("update") &&
+                    !h.contains("price") &&
+                    !h.contains("gmp") &&
+                    !h.contains("gain") &&
+                    !h.contains("est") &&
+                    !h.contains("sub") &&
+                    !h.contains("status")
+            }
+            val hasUpcomingMetaCol = headers.any { h ->
+                h.contains("drhp") || h.contains("rhp") || h.contains("fil") || h.contains("date") || h.contains("expected")
+            }
             val typeIdx = headers.indexOfFirst { it.contains("type") || it.contains("category") || it.contains("board") || it.contains("exchange") }
             val statusIdx = headers.indexOfFirst { it.contains("status") }
             val subIdx = headers.indexOfFirst { it.contains("sub") }
 
             if (nameIdx < 0) return@forEach
-            if (gmpIdx < 0 && priceIdx < 0 && sizeIdx < 0 && listingIdx < 0) return@forEach
+            val hasUsefulColumn = gmpIdx >= 0 || priceIdx >= 0 || sizeIdx >= 0 || listingIdx >= 0 ||
+                (defaultStatus == IpoStatus.UPCOMING && (dateIdx >= 0 || openIdx >= 0 || typeIdx >= 0 || statusIdx >= 0 || hasUpcomingMetaCol))
+            if (!hasUsefulColumn) return@forEach
 
             rows.drop(headerIndexRow + 1).forEach { cells ->
                 if (cells.size <= nameIdx) return@forEach
                 val rawName = cells[nameIdx]
                 val companyName = sanitizeCompanyName(rawName)
-                if (companyName.length < 3) return@forEach
+                if (!IpoFilingVerifier.isValidCompanyName(companyName)) return@forEach
 
                 val priceRaw = if (priceIdx in cells.indices) cells[priceIdx] else ""
                 val (pLow, pHigh) = parsePriceRange(priceRaw)
@@ -709,18 +1134,44 @@ class LiveGmpRepository(
 
                 val openRaw = if (openIdx in cells.indices) cells[openIdx] else ""
                 val closeRaw = if (closeIdx in cells.indices) cells[closeIdx] else ""
-                val (rawOpenDate, rawCloseDate) = if (openRaw.isNotBlank() && closeRaw.isNotBlank()) {
-                    openRaw to closeRaw
-                } else if (defaultStatus == IpoStatus.CLOSED) {
-                    "" to ""
-                } else {
-                    val dateRaw = if (dateIdx in cells.indices && dateIdx != listingIdx) cells[dateIdx] else ""
-                    splitDateRange(dateRaw)
+                val dateRaw = if (dateIdx in cells.indices && dateIdx != listingIdx) cells[dateIdx] else ""
+
+                var parsedOpen = ""
+                var parsedClose = ""
+                when {
+                    openRaw.isNotBlank() && closeRaw.isNotBlank() -> {
+                        parsedOpen = IpoFilingVerifier.sanitizeConfirmedDate(openRaw)
+                        parsedClose = IpoFilingVerifier.sanitizeConfirmedDate(closeRaw)
+                    }
+                    openRaw.isNotBlank() && closeRaw.isBlank() -> {
+                        val (o1, c1) = IpoDateUtils.parseDateRange(openRaw)
+                        parsedOpen = o1.ifBlank { IpoFilingVerifier.sanitizeConfirmedDate(openRaw) }
+                        parsedClose = c1
+                        if (parsedClose.isBlank() && dateIdx != openIdx && dateRaw.isNotBlank()) {
+                            val (o2, c2) = IpoDateUtils.parseDateRange(dateRaw)
+                            if (parsedOpen.isBlank()) parsedOpen = o2
+                            if (c2.isNotBlank()) parsedClose = c2
+                        }
+                    }
+                    openRaw.isBlank() && closeRaw.isNotBlank() -> {
+                        parsedClose = IpoFilingVerifier.sanitizeConfirmedDate(closeRaw)
+                        if (dateIdx != closeIdx && dateRaw.isNotBlank()) {
+                            val (o2, _) = IpoDateUtils.parseDateRange(dateRaw)
+                            if (o2.isNotBlank()) parsedOpen = o2
+                        }
+                    }
+                    defaultStatus != IpoStatus.CLOSED && dateRaw.isNotBlank() -> {
+                        val (o, c) = IpoDateUtils.parseDateRange(dateRaw)
+                        parsedOpen = o
+                        parsedClose = c
+                    }
                 }
-                val openDate = IpoFilingVerifier.sanitizeConfirmedDate(rawOpenDate)
-                val closeDate = IpoFilingVerifier.sanitizeConfirmedDate(rawCloseDate)
-                val listingDate = IpoFilingVerifier.sanitizeConfirmedDate(
-                    if (listingIdx in cells.indices) cells[listingIdx] else "",
+
+                val rawListingCell = if (listingIdx in cells.indices) cells[listingIdx] else ""
+                val (openDate, closeDate, listingDate) = validateScheduleTriple(
+                    parsedOpen,
+                    parsedClose,
+                    rawListingCell,
                 )
 
                 val rawGmpCell = if (gmpIdx in cells.indices) cells[gmpIdx] else ""
@@ -742,17 +1193,33 @@ class LiveGmpRepository(
                     }
                 }
 
-                if (!hasExplicitGmp && pHigh == 0 && issueSizeCr <= 0.0 && openDate.isBlank() && listingDate.isBlank()) {
-                    return@forEach
-                }
-
                 val typeRaw = if (typeIdx in cells.indices) cells[typeIdx] else ""
                 val statusRaw = if (statusIdx in cells.indices) cells[statusIdx] else ""
                 val subX = if (subIdx in cells.indices) parseSubMultiplier(cells[subIdx]) else 0.0
                 val boardType = defaultBoardType ?: detectBoardType(rawName, typeRaw, pLow, lotSize)
-                val status = defaultStatus ?: inferStatus("$rawName $statusRaw $rawGmpCell", openDate, closeDate, pHigh, listingDate)
+                val inferredStatus = inferStatus("$rawName $statusRaw $rawGmpCell", openDate, closeDate, pHigh, listingDate)
+                val status = when {
+                    defaultStatus == IpoStatus.CLOSED -> IpoStatus.CLOSED
+                    defaultStatus == IpoStatus.UPCOMING -> {
+                        // Preserve LIVE/CLOSED if dates show it already opened or closed, otherwise UPCOMING
+                        if (openDate.isNotBlank() || closeDate.isNotBlank() || listingDate.isNotBlank()) {
+                            inferredStatus
+                        } else {
+                            IpoStatus.UPCOMING
+                        }
+                    }
+                    else -> inferredStatus
+                }
+
+                if (defaultStatus != IpoStatus.UPCOMING &&
+                    status != IpoStatus.UPCOMING &&
+                    !hasExplicitGmp && pHigh == 0 && issueSizeCr <= 0.0 && openDate.isBlank() && listingDate.isBlank()
+                ) {
+                    return@forEach
+                }
+
                 val isUnconfirmed = IpoFilingVerifier.isHardRejectedStatus("$rawName $statusRaw") ||
-                    IpoFilingVerifier.containsUnfiledOrRumoredMarkers(rawName)
+                    (status != IpoStatus.UPCOMING && IpoFilingVerifier.containsUnfiledOrRumoredMarkers(rawName))
                 val normKey = normalizeCompanyKey(companyName)
                 if (normKey.isBlank()) return@forEach
 
@@ -859,12 +1326,8 @@ class LiveGmpRepository(
     internal fun tokenizeCompanyName(name: String): List<String> {
         val stopWords = setOf(
             "ltd", "limited", "pvt", "private", "llp", "inc", "plc",
-            "corp", "corporation", "co", "company", "india", "ipo", "sme",
-            "nse", "bse", "mainboard", "holdings", "holding", "group",
-            "enterprises", "enterprise", "services", "service", "solutions",
-            "solution", "industries", "industry", "technologies", "technology",
-            "tech", "infra", "infrastructure", "projects", "project",
-            "kiranakart", "crop", "protection", "the", "and", "of",
+            "corp", "corporation", "co", "company", "ipo", "sme",
+            "nse", "bse", "mainboard", "the", "and", "of",
         )
         val rawTokens = name.lowercase(Locale.US)
             .replace(Regex("[^a-z0-9\\s]"), " ")
@@ -888,6 +1351,95 @@ class LiveGmpRepository(
             map.entries.firstOrNull { (k, v) -> k.contains(part) && v.isNotBlank() }?.let { return it.value }
         }
         return ""
+    }
+
+    private fun findFieldExcluding(
+        map: Map<String, String>,
+        exactKeys: List<String>,
+        includeTokens: List<String>,
+        excludeTokens: List<String>,
+    ): String {
+        for (exact in exactKeys) {
+            val value = map[exact]
+            if (!value.isNullOrBlank()) return value
+        }
+        for (token in includeTokens) {
+            map.entries.firstOrNull { (k, v) ->
+                v.isNotBlank() &&
+                    k.contains(token) &&
+                    excludeTokens.none { ex -> k.contains(ex) }
+            }?.let { return it.value }
+        }
+        return ""
+    }
+
+    private fun findDateField(
+        map: Map<String, String>,
+        exactKeys: List<String>,
+        includeTokens: List<String>,
+        excludeTokens: List<String>,
+        allowDateRange: Boolean = false,
+    ): String {
+        fun isCandidateDateValue(raw: String): Boolean {
+            if (raw.isBlank()) return false
+            if (IpoFilingVerifier.sanitizeConfirmedDate(raw).isNotBlank()) return true
+            return allowDateRange && IpoDateUtils.parseDateRange(raw).first.isNotBlank()
+        }
+
+        for (exact in exactKeys) {
+            val value = map[exact]
+            if (value != null && isCandidateDateValue(value)) return value
+        }
+        for (token in includeTokens) {
+            map.entries.firstOrNull { (k, v) ->
+                k.contains(token) &&
+                    excludeTokens.none { ex -> k.contains(ex) } &&
+                    isCandidateDateValue(v)
+            }?.let { return it.value }
+        }
+        return ""
+    }
+
+    private fun isListingConsistentWithWindow(
+        listingDate: String,
+        openDate: String,
+        closeDate: String,
+        referenceTimeMs: Long = System.currentTimeMillis(),
+    ): Boolean {
+        val listMs = IpoDateUtils.parseFlexibleDateMs(listingDate, referenceTimeMs) ?: return false
+        val closeMs = IpoDateUtils.parseFlexibleDateMs(closeDate, referenceTimeMs)
+        if (closeMs != null && listMs < closeMs) return false
+        val openMs = IpoDateUtils.parseFlexibleDateMs(openDate, referenceTimeMs)
+        if (openMs != null && listMs < openMs) return false
+        return true
+    }
+
+    internal fun validateScheduleTriple(
+        rawOpenDate: String,
+        rawCloseDate: String,
+        rawListingDate: String,
+        referenceTimeMs: Long = System.currentTimeMillis(),
+    ): Triple<String, String, String> {
+        var openDate = IpoFilingVerifier.sanitizeConfirmedDate(rawOpenDate, referenceTimeMs)
+        var closeDate = IpoFilingVerifier.sanitizeConfirmedDate(rawCloseDate, referenceTimeMs)
+        var listingDate = IpoFilingVerifier.sanitizeConfirmedDate(rawListingDate, referenceTimeMs)
+
+        val openMs = IpoDateUtils.parseFlexibleDateMs(openDate, referenceTimeMs)
+        val closeMs = IpoDateUtils.parseFlexibleDateMs(closeDate, referenceTimeMs)
+        if (openMs != null && closeMs != null && !IpoDateUtils.isValidBiddingWindow(openMs, closeMs)) {
+            openDate = ""
+            closeDate = ""
+        }
+
+        val validOpenMs = IpoDateUtils.parseFlexibleDateMs(openDate, referenceTimeMs)
+        val validCloseMs = IpoDateUtils.parseFlexibleDateMs(closeDate, referenceTimeMs)
+        val listMs = IpoDateUtils.parseFlexibleDateMs(listingDate, referenceTimeMs)
+        if (listMs != null) {
+            if ((validCloseMs != null && listMs < validCloseMs) || (validOpenMs != null && listMs < validOpenMs)) {
+                listingDate = ""
+            }
+        }
+        return Triple(openDate, closeDate, listingDate)
     }
 
     private fun cleanHtml(raw: String): String {
@@ -951,71 +1503,82 @@ class LiveGmpRepository(
         return match?.groupValues?.getOrNull(1)?.toDoubleOrNull() ?: 0.0
     }
 
-    private fun detectBoardType(
+    internal fun detectBoardType(
         rawName: String,
         categoryRaw: String,
         priceLow: Int,
         lotSize: Int,
     ): BoardType {
         val combined = "$rawName $categoryRaw".lowercase(Locale.US)
-        return if (combined.contains("sme") || (lotSize > 0 && priceLow > 0 && lotSize * priceLow >= 90_000)) {
+        return if (SME_WORD_REGEX.containsMatchIn(combined) || (lotSize > 0 && priceLow > 0 && lotSize * priceLow >= 90_000)) {
             BoardType.SME
         } else {
             BoardType.MAINBOARD
         }
     }
 
-    private fun splitDateRange(raw: String): Pair<String, String> {
-        val cleaned = raw.trim()
-        if (cleaned.isBlank()) return "" to ""
-        val parts = cleaned.split(Regex("\\s*(?:-|to|–)\\s*", RegexOption.IGNORE_CASE))
-        return if (parts.size >= 2) {
-            parts[0].trim() to parts[1].trim()
-        } else {
-            cleaned to cleaned
-        }
-    }
-
+    /**
+     * Date-first IPO lifecycle status inference (IST).
+     * Verified calendar dates always take precedence over stale/fuzzy status text tags,
+     * and missing or unconfirmed dates NEVER produce [IpoStatus.LIVE].
+     */
     internal fun inferStatus(
         statusHint: String,
         openDate: String,
         closeDate: String,
         priceHigh: Int,
         listingDate: String = "",
+        referenceTimeMs: Long = System.currentTimeMillis(),
     ): IpoStatus {
         val lower = statusHint.lowercase(Locale.US)
-        when {
-            lower.contains("listed") || lower.contains("l@") || lower.contains("close") || lower.contains("allot") -> return IpoStatus.CLOSED
-            lower.contains("pre-apply") || lower.contains("pre apply") || lower.contains("preapply") -> return IpoStatus.PRE_APPLY
-            lower.contains("open") || lower.contains("live") -> return IpoStatus.LIVE
+        val today = IpoDateUtils.startOfDayMs(referenceTimeMs)
+        val openMs = IpoDateUtils.parseFlexibleDateMs(openDate, referenceTimeMs)
+        val closeMs = IpoDateUtils.parseFlexibleDateMs(closeDate, referenceTimeMs)
+        val listMs = IpoDateUtils.parseFlexibleDateMs(listingDate, referenceTimeMs)
+
+        // 1. Verified calendar dates always win over fuzzy/stale text labels.
+        if (listMs != null && today >= listMs) return IpoStatus.CLOSED
+        if (closeMs != null && today > closeMs) return IpoStatus.CLOSED
+
+        if (openMs != null && closeMs != null && IpoDateUtils.isValidBiddingWindow(openMs, closeMs)) {
+            return when {
+                today in openMs..closeMs -> {
+                    if (lower.contains("listed") || lower.contains("l@")) IpoStatus.CLOSED else IpoStatus.LIVE
+                }
+                openMs > today -> {
+                    if (openMs - today <= 5L * 86_400_000L && priceHigh > 0) IpoStatus.PRE_APPLY else IpoStatus.UPCOMING
+                }
+                else -> IpoStatus.CLOSED
+            }
         }
 
-        val today = IpoDateUtils.startOfDayMs()
-        val openMs = IpoDateUtils.parseFlexibleDateMs(openDate)
-        val closeMs = IpoDateUtils.parseFlexibleDateMs(closeDate)
-        val listMs = IpoDateUtils.parseFlexibleDateMs(listingDate)
-
-        if (closeMs != null && today > closeMs) return IpoStatus.CLOSED
-        if (listMs != null && today >= listMs) return IpoStatus.CLOSED
-
-        if (openMs != null && closeMs != null) {
+        if (openMs != null) {
             return when {
-                today in openMs..closeMs -> IpoStatus.LIVE
-                openMs - today <= 5L * 86_400_000L && priceHigh > 0 -> IpoStatus.PRE_APPLY
+                openMs > today -> {
+                    if (openMs - today <= 5L * 86_400_000L && priceHigh > 0) IpoStatus.PRE_APPLY else IpoStatus.UPCOMING
+                }
+                today - openMs > 7L * 86_400_000L -> IpoStatus.CLOSED
                 else -> IpoStatus.UPCOMING
             }
         }
-        return if (priceHigh > 0) IpoStatus.PRE_APPLY else IpoStatus.UPCOMING
+
+        // 2. Fallback to explicit status hint ONLY when calendar dates are absent.
+        // Never allow missing/TBA dates to become LIVE.
+        return when {
+            lower.contains("listed") || lower.contains("l@") || lower.contains("close") || lower.contains("allot") -> IpoStatus.CLOSED
+            lower.contains("pre-apply") || lower.contains("pre apply") || lower.contains("preapply") -> IpoStatus.PRE_APPLY
+            else -> IpoStatus.UPCOMING
+        }
     }
 
-    private enum class SourceKind {
+    internal enum class SourceKind {
         NSE_JSON,
         INVESTORGAIN_JSON,
         HTML_TABLE,
         RSS_FEED,
     }
 
-    private data class SourceTask(
+    internal data class SourceTask(
         val name: String,
         val priorityRank: Int,
         val url: String,
@@ -1024,4 +1587,63 @@ class LiveGmpRepository(
         val defaultStatus: IpoStatus? = null,
         val defaultBoardType: BoardType? = null,
     )
+
+    private class InMemorySessionCookieJar : CookieJar {
+        private val store = ConcurrentHashMap<String, MutableList<Cookie>>()
+
+        override fun saveFromResponse(url: HttpUrl, cookies: List<Cookie>) {
+            val host = url.host
+            val existing = store.computeIfAbsent(host) { mutableListOf() }
+            synchronized(existing) {
+                for (cookie in cookies) {
+                    existing.removeAll { it.name == cookie.name && it.domain == cookie.domain && it.path == cookie.path }
+                    if (cookie.expiresAt > System.currentTimeMillis()) {
+                        existing.add(cookie)
+                    }
+                }
+            }
+        }
+
+        override fun loadForRequest(url: HttpUrl): List<Cookie> {
+            val now = System.currentTimeMillis()
+            val result = mutableListOf<Cookie>()
+            store.values.forEach { list ->
+                synchronized(list) {
+                    list.removeAll { it.expiresAt <= now }
+                    list.filterTo(result) { it.matches(url) }
+                }
+            }
+            return result
+        }
+    }
+
+    companion object {
+        private val SME_WORD_REGEX = Regex("\\bsme\\b")
+        private const val NSE_WARMUP_INTERVAL_MS = 10L * 60_000L
+        internal const val PER_SOURCE_TIMEOUT_MS = 7_000L
+        internal const val NSE_WARMUP_TIMEOUT_MS = 4_000L
+        private const val BROWSER_USER_AGENT =
+            "Mozilla/5.0 (Linux; Android 14; Pixel 8) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/126.0.0.0 Mobile Safari/537.36"
+
+        const val DATE_PRIORITY_OFFICIAL_EXCHANGE = 0
+        const val DATE_PRIORITY_CHITTORGARH = 1
+        const val DATE_PRIORITY_INVESTORGAIN = 2
+        const val DATE_PRIORITY_IPOWATCH = 3
+        const val DATE_PRIORITY_IPOCENTRAL = 4
+        const val DATE_PRIORITY_IPOJI = 5
+        const val DATE_PRIORITY_OTHER = 9
+
+        fun datePriorityForSource(sourceName: String): Int {
+            val lower = sourceName.lowercase(Locale.US)
+            return when {
+                lower.contains("nse") || lower.contains("bse") || lower.contains("sebi") -> DATE_PRIORITY_OFFICIAL_EXCHANGE
+                lower.contains("chittorgarh") -> DATE_PRIORITY_CHITTORGARH
+                lower.contains("investorgain") -> DATE_PRIORITY_INVESTORGAIN
+                lower.contains("ipowatch") -> DATE_PRIORITY_IPOWATCH
+                lower.contains("ipocentral") || lower.contains("ipo central") -> DATE_PRIORITY_IPOCENTRAL
+                lower.contains("ipoji") -> DATE_PRIORITY_IPOJI
+                else -> DATE_PRIORITY_OTHER
+            }
+        }
+    }
 }

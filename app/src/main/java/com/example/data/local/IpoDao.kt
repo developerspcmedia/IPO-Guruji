@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.OnConflictStrategy
 import androidx.room.Query
+import androidx.room.Transaction
 import com.example.data.model.IpoEntity
 import kotlinx.coroutines.flow.Flow
 
@@ -26,6 +27,13 @@ interface IpoDao {
 
     @Query("DELETE FROM ipos WHERE id NOT IN (:activeIds)")
     suspend fun deleteObsoleteIds(activeIds: List<String>)
+
+    @Transaction
+    suspend fun replaceCatalog(items: List<IpoEntity>, activeIds: List<String>) {
+        if (items.isEmpty() || activeIds.isEmpty()) return
+        insertAll(items)
+        deleteObsoleteIds(activeIds)
+    }
 
     @Query("UPDATE ipos SET userLots = :lots WHERE id = :id")
     suspend fun updateUserLots(id: String, lots: Int)

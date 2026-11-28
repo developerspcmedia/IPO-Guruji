@@ -618,7 +618,12 @@ object IpoNotificationManager {
         ensureChannels(context)
 
         val notificationId = NEWS_NOTIFICATION_BASE_ID + abs(article.id.hashCode() % 9_000)
-        val title = "${article.category.label}: ${article.title}"
+        val prefix = if (article.category == NewsCategory.USA_IPOS) {
+            "USA IPO Alert"
+        } else {
+            article.category.label
+        }
+        val title = "$prefix: ${article.title}"
         val body = "${article.source} • ${article.summary}"
 
         val builder = NotificationCompat.Builder(context, CHANNEL_NEWS_ALERTS)
@@ -638,7 +643,11 @@ object IpoNotificationManager {
         ensureChannels(context)
 
         val notificationId = NEWS_NOTIFICATION_BASE_ID + 9_999
-        val title = "IPO News Alert: ${article.title}"
+        val title = if (article.category == NewsCategory.USA_IPOS) {
+            "USA IPO News Alert: ${article.title}"
+        } else {
+            "IPO News Alert: ${article.title}"
+        }
         val body = "${article.source} • ${article.category.label} — Tap to open the News tab."
 
         val builder = NotificationCompat.Builder(context, CHANNEL_NEWS_ALERTS)
@@ -662,6 +671,7 @@ object IpoNotificationManager {
             .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
             .setPeriodic(PERIODIC_INTERVAL_MS)
             .setRequiresBatteryNotLow(true)
+            .setPersisted(true)
             .build()
 
         runCatching { scheduler.schedule(jobInfo) }
@@ -679,6 +689,7 @@ object IpoNotificationManager {
         val jobInfo = JobInfo.Builder(ALLOTMENT_JOB_ID, component)
             .setRequiredNetworkType(JobInfo.NETWORK_TYPE_ANY)
             .setPeriodic(ALLOTMENT_CHECK_INTERVAL_MS)
+            .setPersisted(true)
             .build()
 
         runCatching { scheduler.schedule(jobInfo) }

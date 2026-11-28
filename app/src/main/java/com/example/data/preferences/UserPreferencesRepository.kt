@@ -40,9 +40,18 @@ enum class ThemePreference(
 ) {
     SYSTEM("System", "Match device"),
     LIGHT("Light", "Clean daylight"),
-    DARK("AMOLED", "True black OLED"),
+    DARK("Dark Minimal", "Material dark"),
     IOS_GLASS("iOS Glass", "Transparent frost"),
 }
+
+data class CloudSyncedPrefsSnapshot(
+    val themePreference: ThemePreference = ThemePreference.SYSTEM,
+    val compactCards: Boolean = false,
+    val notifyNewIpo: Boolean = true,
+    val notifyOpenIpo: Boolean = true,
+    val notifyAllotment: Boolean = true,
+    val notifyNewsAlerts: Boolean = true,
+)
 
 data class NotificationPreferencesSnapshot(
     val notifyNewIpoEnabled: Boolean,
@@ -63,6 +72,7 @@ data class NewsNotificationPreferencesSnapshot(
     companion object {
         val DEFAULT_NEWS_ALERT_CATEGORIES: Set<NewsCategory> = setOf(
             NewsCategory.UPCOMING,
+            NewsCategory.USA_IPOS,
             NewsCategory.GMP_LISTING,
             NewsCategory.SME_BUZZ,
             NewsCategory.SEBI_FILINGS,
@@ -278,6 +288,42 @@ class UserPreferencesRepository(private val context: Context) {
                 current.remove(ipoId)
             }
             prefs[Keys.BOOKMARKED_IPO_IDS] = current
+        }
+    }
+
+    suspend fun setBookmarkedIpoIds(ids: Set<String>) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.BOOKMARKED_IPO_IDS] = ids.take(200).toSet()
+        }
+    }
+
+    suspend fun getBookmarkedIpoIdsSnapshot(): Set<String> {
+        val prefs = context.dataStore.data.first()
+        return prefs[Keys.BOOKMARKED_IPO_IDS] ?: emptySet()
+    }
+
+    suspend fun getCurrentThemeAndAlertSnapshot(): CloudSyncedPrefsSnapshot {
+        val prefs = context.dataStore.data.first()
+        val storedTheme = prefs[Keys.THEME_MODE] ?: ThemePreference.SYSTEM.name
+        val theme = runCatching { ThemePreference.valueOf(storedTheme) }.getOrDefault(ThemePreference.SYSTEM)
+        return CloudSyncedPrefsSnapshot(
+            themePreference = theme,
+            compactCards = prefs[Keys.COMPACT_CARDS_ENABLED] ?: false,
+            notifyNewIpo = prefs[Keys.NOTIFY_NEW_IPO] ?: true,
+            notifyOpenIpo = prefs[Keys.NOTIFY_OPEN_IPO] ?: true,
+            notifyAllotment = prefs[Keys.NOTIFY_ALLOTMENT] ?: true,
+            notifyNewsAlerts = prefs[Keys.NOTIFY_NEWS_ALERTS] ?: true,
+        )
+    }
+
+    suspend fun applyCloudPreferences(snapshot: CloudSyncedPrefsSnapshot) {
+        context.dataStore.edit { prefs ->
+            prefs[Keys.THEME_MODE] = snapshot.themePreference.name
+            prefs[Keys.COMPACT_CARDS_ENABLED] = snapshot.compactCards
+            prefs[Keys.NOTIFY_NEW_IPO] = snapshot.notifyNewIpo
+            prefs[Keys.NOTIFY_OPEN_IPO] = snapshot.notifyOpenIpo
+            prefs[Keys.NOTIFY_ALLOTMENT] = snapshot.notifyAllotment
+            prefs[Keys.NOTIFY_NEWS_ALERTS] = snapshot.notifyNewsAlerts
         }
     }
 

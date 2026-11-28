@@ -76,27 +76,27 @@ val LightGlassStyle = GlassStyle(
     hairline = HairlineBorderLight,
 )
 
-/** True pitch-black AMOLED OLED dark theme with opaque surfaces and maximum text legibility */
-val AmoledDarkGlassStyle = GlassStyle(
+/** Dark Material Minimalistic theme with canonical #121212 charcoal canvas and calm tonal elevation */
+val MaterialDarkMinimalStyle = GlassStyle(
     isDark = true,
-    isAmoled = true,
+    isAmoled = false,
     isGlass = false,
-    backdropTop = AmoledBackground,
-    backdropMid = AmoledBackground,
-    backdropBottom = AmoledBackground,
+    backdropTop = DarkMaterialBackground,
+    backdropMid = DarkMaterialBackground,
+    backdropBottom = DarkMaterialBackground,
     ambientOrbPrimary = Color.Transparent,
     ambientOrbSecondary = Color.Transparent,
     ambientOrbTertiary = Color.Transparent,
-    cardFill = AmoledSurface,
-    elevatedFill = AmoledElevatedSurface,
-    dockFill = AmoledDockSurface,
-    sheetFill = AmoledSheetSurface,
-    pillFill = AmoledSurfaceVariant,
-    activeDockPillFill = CobaltContainerAmoled,
-    specularBorderTop = AmoledBorder,
-    specularBorderBottom = AmoledBorder,
+    cardFill = DarkMaterialSurface,
+    elevatedFill = DarkMaterialElevatedSurface,
+    dockFill = DarkMaterialDockSurface,
+    sheetFill = DarkMaterialSheetSurface,
+    pillFill = DarkMaterialSurfaceVariant,
+    activeDockPillFill = MaterialDarkPrimaryContainer,
+    specularBorderTop = DarkMaterialBorder,
+    specularBorderBottom = DarkMaterialBorder,
     innerSheen = Color.Transparent,
-    hairline = AmoledHairline,
+    hairline = DarkMaterialHairline,
 )
 
 /** Luminous iOS-style transparent frosted glass theme layered over a soft aurora backdrop */
@@ -168,36 +168,36 @@ private val LightColorScheme = lightColorScheme(
     onErrorContainer = BearishCrimson,
 )
 
-private val AmoledDarkColorScheme = darkColorScheme(
-    primary = CobaltPrimaryAmoled,
-    onPrimary = Color(0xFF001429),
-    primaryContainer = CobaltContainerAmoled,
-    onPrimaryContainer = Color(0xFFD6EAFF),
-    secondary = TealAccentBright,
-    onSecondary = Color(0xFF001826),
-    secondaryContainer = BullishBgAmoled,
-    onSecondaryContainer = BullishEmeraldBright,
-    tertiary = AmberGoldBright,
-    onTertiary = Color(0xFF211300),
-    tertiaryContainer = AmberBgAmoled,
-    onTertiaryContainer = AmberGoldBright,
-    background = AmoledBackground,
-    onBackground = AmoledPrimaryText,
-    surface = AmoledSurface,
-    onSurface = AmoledPrimaryText,
-    surfaceVariant = AmoledSurfaceVariant,
-    onSurfaceVariant = AmoledSecondaryText,
-    surfaceContainerLowest = AmoledBackground,
-    surfaceContainerLow = AmoledSheetSurface,
-    surfaceContainer = AmoledSurface,
-    surfaceContainerHigh = AmoledSurfaceVariant,
-    surfaceContainerHighest = AmoledElevatedSurface,
-    outline = AmoledBorder,
-    outlineVariant = AmoledHairline,
-    error = BearishCrimsonBright,
-    onError = Color(0xFF280507),
-    errorContainer = BearishBgAmoled,
-    onErrorContainer = BearishCrimsonBright,
+private val MaterialDarkMinimalColorScheme = darkColorScheme(
+    primary = MaterialDarkPrimary,
+    onPrimary = CtaDarkInk,
+    primaryContainer = MaterialDarkPrimaryContainer,
+    onPrimaryContainer = Color(0xFFD6E4FF),
+    secondary = TealAccentDark,
+    onSecondary = Color(0xFF042420),
+    secondaryContainer = BullishBgDark,
+    onSecondaryContainer = BullishEmeraldDark,
+    tertiary = AmberGoldDark,
+    onTertiary = Color(0xFF231702),
+    tertiaryContainer = AmberBgDark,
+    onTertiaryContainer = AmberGoldDark,
+    background = DarkMaterialBackground,
+    onBackground = DarkMaterialPrimaryText,
+    surface = DarkMaterialSurface,
+    onSurface = DarkMaterialPrimaryText,
+    surfaceVariant = DarkMaterialSurfaceVariant,
+    onSurfaceVariant = DarkMaterialSecondaryText,
+    surfaceContainerLowest = DarkMaterialBackground,
+    surfaceContainerLow = DarkMaterialSheetSurface,
+    surfaceContainer = DarkMaterialSurface,
+    surfaceContainerHigh = DarkMaterialSurfaceVariant,
+    surfaceContainerHighest = DarkMaterialElevatedSurface,
+    outline = DarkMaterialBorder,
+    outlineVariant = DarkMaterialHairline,
+    error = BearishCrimsonDark,
+    onError = Color(0xFF2D0A0E),
+    errorContainer = BearishBgDark,
+    onErrorContainer = BearishCrimsonDark,
 )
 
 private val IosGlassColorScheme = lightColorScheme(
@@ -253,31 +253,31 @@ fun IpoPulseTheme(
     val effective = resolveEffectiveTheme(themePreference)
 
     val colorScheme = when (effective) {
-        ThemePreference.DARK -> AmoledDarkColorScheme
+        ThemePreference.DARK -> MaterialDarkMinimalColorScheme
         ThemePreference.IOS_GLASS -> IosGlassColorScheme
         else -> LightColorScheme
     }
 
     val glassStyle = when (effective) {
-        ThemePreference.DARK -> AmoledDarkGlassStyle
+        ThemePreference.DARK -> MaterialDarkMinimalStyle
         ThemePreference.IOS_GLASS -> IosTransparentGlassStyle
         else -> LightGlassStyle
     }
 
     val marketColors = when (effective) {
         ThemePreference.DARK -> MarketColors(
-            bullish = BullishEmeraldBright,
-            bullishContainer = BullishBgAmoled,
-            bearish = BearishCrimsonBright,
-            bearishContainer = BearishBgAmoled,
-            smeBadge = AmberGoldBright,
-            smeContainer = AmberBgAmoled,
-            border = AmoledBorder,
-            mutedText = AmoledMutedText,
-            ctaGold = CtaGoldAmoled,
-            ctaGoldInk = CtaGoldInk,
-            liveAccent = LiveAccentAmoled,
-            liveContainer = LiveBgAmoled,
+            bullish = BullishEmeraldDark,
+            bullishContainer = BullishBgDark,
+            bearish = BearishCrimsonDark,
+            bearishContainer = BearishBgDark,
+            smeBadge = AmberGoldDark,
+            smeContainer = AmberBgDark,
+            border = DarkMaterialBorder,
+            mutedText = DarkMaterialMutedText,
+            ctaGold = CtaDarkPrimary,
+            ctaGoldInk = CtaDarkInk,
+            liveAccent = LiveAccentDark,
+            liveContainer = LiveBgDark,
         )
 
         ThemePreference.IOS_GLASS -> MarketColors(

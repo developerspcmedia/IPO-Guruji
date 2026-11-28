@@ -11,6 +11,7 @@ import com.example.data.model.IpoEntity
 import com.example.data.model.IpoNewsArticle
 import com.example.data.model.IpoNewsCatalog
 import com.example.data.model.IpoStatus
+import com.example.data.model.IpoTimelineBucket
 import com.example.data.model.NewsCategory
 import com.example.data.preferences.GmpWatchRule
 import com.example.data.preferences.NewsNotificationPreferencesSnapshot
@@ -20,14 +21,18 @@ import com.example.data.repository.GmpSyncSummary
 import com.example.data.repository.IpoFilingVerifier
 import com.example.data.repository.IpoNewsRepository
 import com.example.data.repository.IpoRepository
+import com.example.data.repository.LiveSubscriptionRepository
 import com.example.notifications.IpoNotificationManager
 import com.example.widget.IpoLiveWidgetProvider
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.stateIn
+import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 
 enum class BoardFilter(val label: String) {
@@ -39,13 +44,15 @@ enum class BoardFilter(val label: String) {
 enum class StatusFilter(val label: String) {
     ALL("All IPOs"),
     LIVE("Open"),
+    ALLOTMENT("Allotment"),
     PRE_APPLY("Pre-Apply"),
     UPCOMING("Upcoming"),
     CLOSED("Closed"),
 }
 
 enum class BoardTimelineTab(val label: String) {
-    CURRENT_UPCOMING("Current & Upcoming"),
+    CURRENT("Current"),
+    UPCOMING("Upcoming"),
     LISTED("Listed"),
 }
 
@@ -78,7 +85,7 @@ data class IpoBoardUiState(
     val radarIpos: List<IpoEntity> = emptyList(),
     val newsArticles: List<IpoNewsArticle> = IpoNewsCatalog.getLatestNews(),
     val boardFilter: BoardFilter = BoardFilter.ALL,
-    val timelineTab: BoardTimelineTab = BoardTimelineTab.CURRENT_UPCOMING,
+    val timelineTab: BoardTimelineTab = BoardTimelineTab.CURRENT,
     val statusFilter: StatusFilter = StatusFilter.ALL,
     val boardSortMode: BoardSortMode = BoardSortMode.DEFAULT,
     val savedOnlyFilter: Boolean = false,
@@ -93,6 +100,7 @@ data class IpoBoardUiState(
     val lastSyncedLabel: String = "Syncing...",
     val liveGmpSourcesLabel: String = "NSE India • InvestorGain • IPOWatch • Chittorgarh • IPO Central",
     val gmpStatusMessage: String? = null,
+    val subscriptionSourcesStatusLine: String? = null,
     val liveNewsSourcesLabel: String = "ET IPO • LiveMint • Google News",
     val marketPulse: MarketPulseSummary = MarketPulseSummary(),
     val themePreference: ThemePreference = ThemePreference.SYSTEM,
@@ -115,7 +123,7 @@ class IpoBoardViewModel(
 ) : ViewModel() {
 
     private val boardFilter = MutableStateFlow(BoardFilter.ALL)
-    private val timelineTab = MutableStateFlow(BoardTimelineTab.CURRENT_UPCOMING)
+    private val timelineTab = MutableStateFlow(BoardTimelineTab.CURRENT)
     private val statusFilter = MutableStateFlow(StatusFilter.ALL)
     private val boardSortMode = MutableStateFlow(BoardSortMode.DEFAULT)
     private val savedOnlyFilter = MutableStateFlow(false)
@@ -128,8 +136,12 @@ class IpoBoardViewModel(
     private val lastSyncedLabel = MutableStateFlow("Syncing...")
     private val liveGmpSourcesLabel = MutableStateFlow("NSE India • InvestorGain • IPOWatch • Chittorgarh • IPO Central")
     private val gmpStatusMessage = MutableStateFlow<String?>(null)
+    private val subscriptionSourcesStatusLine = MutableStateFlow<String?>(null)
     private val liveNewsSourcesLabel = MutableStateFlow("ET IPO • LiveMint • Google News")
     private var lastSyncEpochMs: Long = 0L
+    private var lastSuccessfulSyncLabel: String? = null
+    private var isBoardVisible: Boolean = false
+    private var boardPollJob: Job? = null
 
     init {
         refreshAllOnOpen()
@@ -177,7 +189,8 @@ class IpoBoardViewModel(
         syncStatusFlow,
         newsArticles,
         liveNewsSourcesLabel,
-    ) { status, articles, sourcesLabel ->
+        subscriptionSourcesStatusLine,
+    ) { status, articles, sourcesLabel, subSourcesLine ->
         SyncMeta(
             isRefreshing = status.isRefreshing,
             isRefreshingGmp = status.isRefreshingGmp,
@@ -185,6 +198,7 @@ class IpoBoardViewModel(
             lastSyncedLabel = status.lastSyncedLabel,
             liveGmpSourcesLabel = status.liveGmpSourcesLabel,
             gmpStatusMessage = status.gmpStatusMessage,
+            subscriptionSourcesStatusLine = subSourcesLine,
             liveNewsSourcesLabel = sourcesLabel,
         )
     }
@@ -258,22 +272,32 @@ class IpoBoardViewModel(
         syncMetaFlow,
         userPrefsFlow,
     ) { rawIpos, filters, syncMeta, userPrefs ->
-        val ipos = rawIpos.filter { IpoFilingVerifier.isVerifiedFiledEntity(it) }
+        val ipos = rawIpos.filter { IpoFilingVerifier.isDisplayableEntity(it) }
         val query = filters.query.trim().lowercase()
         val timelineScopedIpos = when (filters.timeline) {
-            BoardTimelineTab.CURRENT_UPCOMING -> ipos.filter { ipo ->
-                !IpoDateUtils.isCloseDatePassed(
+            BoardTimelineTab.CURRENT -> ipos.filter { ipo ->
+                IpoDateUtils.classifyTimelineTab(
+                    openDate = ipo.openDate,
                     closeDate = ipo.closeDate,
-                    status = ipo.status,
                     listingDate = ipo.listingDate,
-                )
+                    status = ipo.status,
+                ) == IpoTimelineBucket.CURRENT
+            }
+            BoardTimelineTab.UPCOMING -> ipos.filter { ipo ->
+                IpoDateUtils.classifyTimelineTab(
+                    openDate = ipo.openDate,
+                    closeDate = ipo.closeDate,
+                    listingDate = ipo.listingDate,
+                    status = ipo.status,
+                ) == IpoTimelineBucket.UPCOMING
             }
             BoardTimelineTab.LISTED -> ipos.filter { ipo ->
-                IpoDateUtils.isCloseDatePassed(
+                IpoDateUtils.classifyTimelineTab(
+                    openDate = ipo.openDate,
                     closeDate = ipo.closeDate,
-                    status = ipo.status,
                     listingDate = ipo.listingDate,
-                )
+                    status = ipo.status,
+                ) == IpoTimelineBucket.LISTED
             }.sortedByDescending { ipo ->
                 IpoDateUtils.parseFlexibleDateMs(ipo.listingDate)
                     ?: IpoDateUtils.parseFlexibleDateMs(ipo.closeDate)
@@ -285,17 +309,6 @@ class IpoBoardViewModel(
                 BoardFilter.ALL -> true
                 BoardFilter.MAINBOARD -> ipo.boardType == BoardType.MAINBOARD
                 BoardFilter.SME -> ipo.boardType == BoardType.SME
-            }
-            val statusMatches = if (filters.timeline == BoardTimelineTab.LISTED) {
-                true
-            } else {
-                when (filters.status) {
-                    StatusFilter.ALL -> true
-                    StatusFilter.LIVE -> ipo.status == IpoStatus.LIVE
-                    StatusFilter.PRE_APPLY -> ipo.status == IpoStatus.PRE_APPLY
-                    StatusFilter.UPCOMING -> ipo.status == IpoStatus.UPCOMING
-                    StatusFilter.CLOSED -> ipo.status == IpoStatus.CLOSED
-                }
             }
             val queryMatches = if (query.isEmpty()) {
                 true
@@ -310,10 +323,52 @@ class IpoBoardViewModel(
             } else {
                 true
             }
-            boardMatches && statusMatches && queryMatches && savedMatches
+            boardMatches && queryMatches && savedMatches
         }.let { list ->
             when (filters.boardSort) {
-                BoardSortMode.DEFAULT -> list
+                BoardSortMode.DEFAULT -> when (filters.timeline) {
+                    BoardTimelineTab.CURRENT -> list.sortedWith(
+                        compareBy<IpoEntity> { ipo ->
+                            val isOpenNow = IpoDateUtils.isBiddingOpenToday(
+                                openDate = ipo.openDate,
+                                closeDate = ipo.closeDate,
+                                listingDate = ipo.listingDate,
+                                status = ipo.status,
+                            )
+                            val inAllotment = IpoDateUtils.isInAllotmentPhase(
+                                closeDate = ipo.closeDate,
+                                listingDate = ipo.listingDate,
+                                status = ipo.status,
+                            )
+                            when {
+                                isOpenNow -> 0
+                                inAllotment -> 1
+                                else -> 2
+                            }
+                        }.thenBy { ipo ->
+                            val isOpenNow = IpoDateUtils.isBiddingOpenToday(
+                                openDate = ipo.openDate,
+                                closeDate = ipo.closeDate,
+                                listingDate = ipo.listingDate,
+                                status = ipo.status,
+                            )
+                            if (isOpenNow) {
+                                IpoDateUtils.parseFlexibleDateMs(ipo.closeDate) ?: Long.MAX_VALUE
+                            } else {
+                                IpoDateUtils.parseFlexibleDateMs(ipo.listingDate)
+                                    ?: IpoDateUtils.parseFlexibleDateMs(ipo.closeDate)
+                                    ?: Long.MAX_VALUE
+                            }
+                        }.thenBy { it.sortOrder },
+                    )
+                    BoardTimelineTab.UPCOMING -> list.sortedWith(
+                        compareBy<IpoEntity> { ipo ->
+                            IpoDateUtils.parseFlexibleDateMs(ipo.openDate) ?: Long.MAX_VALUE
+                        }.thenBy { it.sortOrder }
+                            .thenBy { it.companyName.lowercase() },
+                    )
+                    BoardTimelineTab.LISTED -> list
+                }
                 BoardSortMode.HIGHEST_GMP -> list.sortedByDescending { it.gmpPercent }
                 BoardSortMode.HIGHEST_SUB -> list.sortedByDescending { it.totalSubX }
                 BoardSortMode.CLOSING_SOON -> list.sortedBy { ipo ->
@@ -357,6 +412,7 @@ class IpoBoardViewModel(
             lastSyncedLabel = syncMeta.lastSyncedLabel,
             liveGmpSourcesLabel = syncMeta.liveGmpSourcesLabel,
             gmpStatusMessage = syncMeta.gmpStatusMessage,
+            subscriptionSourcesStatusLine = syncMeta.subscriptionSourcesStatusLine,
             liveNewsSourcesLabel = syncMeta.liveNewsSourcesLabel,
             marketPulse = MarketPulseSummary(
                 liveCount = ipos.count { it.status == IpoStatus.LIVE },
@@ -391,6 +447,46 @@ class IpoBoardViewModel(
         val elapsedMs = System.currentTimeMillis() - lastSyncEpochMs
         if (elapsedMs > 30_000L) {
             refreshMarketPulse()
+        }
+    }
+
+    fun onBoardVisible() {
+        isBoardVisible = true
+        if (boardPollJob?.isActive == true) return
+        boardPollJob = viewModelScope.launch {
+            while (isActive && isBoardVisible) {
+                delay(LiveSubscriptionRepository.BOARD_POLL_INTERVAL_MS)
+                if (!isBoardVisible) break
+                if (LiveSubscriptionRepository.shouldPollBoard(uiState.value.allIpos)) {
+                    refreshBoardSubscriptionsQuietly()
+                }
+            }
+        }
+    }
+
+    fun onBoardHidden() {
+        isBoardVisible = false
+        boardPollJob?.cancel()
+        boardPollJob = null
+    }
+
+    private suspend fun refreshBoardSubscriptionsQuietly() {
+        if (isRefreshing.value || isRefreshingGmp.value) return
+        runCatching {
+            ipoRepository.refreshLiveSubscriptionsOnly(force = true)
+        }.onSuccess { result ->
+            LiveSubscriptionRepository.formatSourceStatuses(result.sourceStatuses)?.let {
+                subscriptionSourcesStatusLine.value = it
+            }
+            if (result.hasLiveSourceData && result.syncedAtLabel.isNotBlank()) {
+                lastSuccessfulSyncLabel = result.syncedAtLabel
+                lastSyncedLabel.value = result.syncedAtLabel
+                lastSyncEpochMs = System.currentTimeMillis()
+            } else {
+                lastSyncedLabel.value = lastSuccessfulSyncLabel?.let {
+                    "Last updated $it (couldn't refresh now)"
+                } ?: lastSyncedLabel.value
+            }
         }
     }
 
@@ -509,11 +605,14 @@ class IpoBoardViewModel(
         )
     }
 
-    private fun applyGmpSummary(
+    internal fun applyGmpSummary(
         gmpSummary: GmpSyncSummary,
         manualTap: Boolean,
         hasLiveNews: Boolean = false,
     ) {
+        LiveSubscriptionRepository.formatSourceStatuses(gmpSummary.subscriptionSourceStatuses)?.let {
+            subscriptionSourcesStatusLine.value = it
+        }
         if (gmpSummary.activeSources.isNotEmpty()) {
             val distinctProviders = gmpSummary.activeSources
                 .mapNotNull { IpoFilingVerifier.providerFamily(it).takeIf { f -> f.isNotBlank() } }
@@ -531,15 +630,21 @@ class IpoBoardViewModel(
             } else {
                 "Cross-verified ($sourcesJoined)$filteredNote • ${gmpSummary.syncedAtTime}"
             }
+            lastSuccessfulSyncLabel = gmpSummary.syncedAtTime
             lastSyncedLabel.value = gmpSummary.syncedAtTime
+            lastSyncEpochMs = System.currentTimeMillis()
         } else {
-            lastSyncedLabel.value = gmpSummary.syncedAtTime
+            val failureLabel = lastSuccessfulSyncLabel?.let {
+                "Last updated $it (couldn't refresh now)"
+            } ?: "Couldn't refresh now"
+            lastSyncedLabel.value = failureLabel
             if (manualTap) {
-                gmpStatusMessage.value = "Verified filed IPOs synced • ${gmpSummary.syncedAtTime}"
+                gmpStatusMessage.value = failureLabel
             }
         }
-        lastSyncEpochMs = System.currentTimeMillis()
     }
+
+    internal fun currentLastSyncedLabelForTest(): String = lastSyncedLabel.value
 
     fun setThemePreference(preference: ThemePreference) {
         viewModelScope.launch {
@@ -623,12 +728,39 @@ class IpoBoardViewModel(
         IpoNotificationManager.postSubscriptionOpenNotification(ctx, candidate)
     }
 
+    fun setUsaNewsAlertsEnabled(enabled: Boolean) {
+        viewModelScope.launch {
+            val current = uiState.value.newsAlertCategories.toMutableSet()
+            if (enabled) {
+                current.add(NewsCategory.USA_IPOS)
+                preferencesRepository.setNotifyNewsAlertsEnabled(true)
+                preferencesRepository.setNewsAlertCategories(current)
+            } else {
+                if (current.size > 1) {
+                    current.remove(NewsCategory.USA_IPOS)
+                    preferencesRepository.setNewsAlertCategories(current)
+                } else {
+                    preferencesRepository.setNotifyNewsAlertsEnabled(false)
+                }
+            }
+        }
+    }
+
     fun sendSampleNewsNotification() {
         val ctx = appContext ?: return
         val articles = uiState.value.newsArticles
         val enabledCats = uiState.value.newsAlertCategories
         val candidate = articles.firstOrNull { it.category in enabledCats }
             ?: articles.firstOrNull()
+            ?: return
+        IpoNotificationManager.postSampleNewsAlertNotification(ctx, candidate)
+    }
+
+    fun sendSampleUsaNewsNotification() {
+        val ctx = appContext ?: return
+        val articles = uiState.value.newsArticles
+        val candidate = articles.firstOrNull { it.category == NewsCategory.USA_IPOS }
+            ?: IpoNewsCatalog.getLatestNews().firstOrNull { it.category == NewsCategory.USA_IPOS }
             ?: return
         IpoNotificationManager.postSampleNewsAlertNotification(ctx, candidate)
     }
@@ -668,6 +800,11 @@ class IpoBoardViewModel(
         val gmpStatusMessage: String?,
     )
 
+    override fun onCleared() {
+        onBoardHidden()
+        super.onCleared()
+    }
+
     private data class SyncMeta(
         val isRefreshing: Boolean,
         val isRefreshingGmp: Boolean,
@@ -675,6 +812,7 @@ class IpoBoardViewModel(
         val lastSyncedLabel: String,
         val liveGmpSourcesLabel: String,
         val gmpStatusMessage: String?,
+        val subscriptionSourcesStatusLine: String?,
         val liveNewsSourcesLabel: String,
     )
 

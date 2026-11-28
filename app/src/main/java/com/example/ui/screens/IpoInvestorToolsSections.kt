@@ -845,10 +845,10 @@ fun ListedPerformanceVsGmpStrip(
     ipo: IpoEntity,
     modifier: Modifier = Modifier,
 ) {
-    val isListed = IpoDateUtils.isCloseDatePassed(
+    val isListed = IpoDateUtils.isListingDateArrived(
+        listingDate = ipo.listingDate,
         closeDate = ipo.closeDate,
         status = ipo.status,
-        listingDate = ipo.listingDate,
     )
     if (!isListed || ipo.priceHigh <= 0) return
 

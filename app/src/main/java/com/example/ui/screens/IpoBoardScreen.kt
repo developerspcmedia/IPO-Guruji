@@ -24,31 +24,24 @@ import androidx.compose.foundation.layout.size
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.layout.widthIn
 import androidx.compose.foundation.lazy.LazyColumn
-import androidx.compose.foundation.lazy.LazyRow
-import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.itemsIndexed
 import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.automirrored.rounded.KeyboardArrowRight
-import androidx.compose.material.icons.automirrored.rounded.Sort
+import androidx.compose.material.icons.outlined.Balance
 import androidx.compose.material.icons.outlined.BookmarkBorder
 import androidx.compose.material.icons.outlined.CalendarMonth
 import androidx.compose.material.icons.outlined.Search
 import androidx.compose.material.icons.outlined.Share
 import androidx.compose.material.icons.outlined.Tune
 import androidx.compose.material.icons.outlined.VerifiedUser
-import androidx.compose.material.icons.outlined.ViewAgenda
-import androidx.compose.material.icons.outlined.ViewStream
-import androidx.compose.material.icons.rounded.Bookmark
 import androidx.compose.material.icons.rounded.Close
 import androidx.compose.material.icons.rounded.Menu
 import androidx.compose.material.icons.rounded.Refresh
 import androidx.compose.material.icons.rounded.SearchOff
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
-import androidx.compose.material3.FilterChip
-import androidx.compose.material3.FilterChipDefaults
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.material3.MaterialTheme
@@ -83,6 +76,9 @@ import com.example.ui.components.IpoCard
 import com.example.ui.components.ShareIpoBottomSheet
 import com.example.ui.components.ShareSummaryBottomSheet
 import com.example.ui.components.buildBoardShareMessage
+import com.example.ui.components.glassBorderStroke
+import com.example.ui.components.glassPanel
+import com.example.ui.theme.LocalGlassStyle
 import com.example.ui.theme.LocalMarketColors
 import com.example.ui.theme.MonoNumericStyle
 import com.example.ui.viewmodel.BoardFilter
@@ -109,6 +105,7 @@ fun IpoBoardScreen(
     onAdImpression: () -> Unit = {},
     onOpenMenu: () -> Unit = {},
     onOpenCalendar: () -> Unit = {},
+    onOpenCompare: (String?) -> Unit = {},
     onSelectBoardSortMode: (BoardSortMode) -> Unit = {},
     onToggleSavedOnly: (Boolean) -> Unit = {},
     onToggleBookmarkIpo: (String) -> Unit = {},
@@ -122,14 +119,6 @@ fun IpoBoardScreen(
         BoardFilter.ALL -> "All • ${uiState.filteredIpos.size} $countWord"
         BoardFilter.MAINBOARD -> "Mainboard • ${uiState.filteredIpos.size} $countWord"
         BoardFilter.SME -> "SME • ${uiState.filteredIpos.size} $countWord"
-    }
-    val visibleStatusFilters = remember {
-        listOf(
-            StatusFilter.ALL,
-            StatusFilter.LIVE,
-            StatusFilter.PRE_APPLY,
-            StatusFilter.UPCOMING,
-        )
     }
 
     Column(
@@ -284,14 +273,24 @@ fun IpoBoardScreen(
                 )
             }
 
-            // Capsule Segmented Switcher: Current & Upcoming | Listed
+            // Capsule Segmented Switcher: Current | Upcoming | Listed
             TimelineSegmentedToggle(
                 selectedTab = uiState.timelineTab,
                 onSelectTab = onSelectTimelineTab,
                 modifier = Modifier
                     .fillMaxWidth()
                     .padding(horizontal = 16.dp)
-                    .padding(top = 2.dp, bottom = 10.dp),
+                    .padding(top = 2.dp, bottom = 8.dp),
+            )
+
+            // Unified Board Filter Row: All | Mainboard | SME
+            BoardSegmentFilterRow(
+                selectedFilter = uiState.boardFilter,
+                onSelectFilter = onSelectBoardFilter,
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .padding(horizontal = 16.dp)
+                    .padding(bottom = 8.dp),
             )
 
             PullToRefreshBox(
@@ -315,187 +314,19 @@ fun IpoBoardScreen(
                     item(key = "market_pulse") {
                         MarketPulseBanner(
                             lastSyncedLabel = uiState.lastSyncedLabel,
+                            subscriptionSourcesStatusLine = uiState.subscriptionSourcesStatusLine,
                             isRefreshingGmp = uiState.isRefreshingGmp || uiState.isRefreshing,
                             onRefreshGmp = onRefreshGmp,
                             onOpenRadar = onOpenRadar,
                         )
                     }
 
-                    // Status & Saved Watchlist Filter Chips
-                    item(key = "status_filter") {
-                        LazyRow(
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            if (uiState.timelineTab == BoardTimelineTab.CURRENT_UPCOMING) {
-                                items(visibleStatusFilters) { filter ->
-                                    val selected = uiState.statusFilter == filter && !uiState.savedOnlyFilter
-                                    FilterChip(
-                                        selected = selected,
-                                        onClick = {
-                                            if (uiState.savedOnlyFilter) onToggleSavedOnly(false)
-                                            onSelectStatusFilter(filter)
-                                        },
-                                        modifier = Modifier.testTag("status_chip_${filter.name.lowercase()}"),
-                                        shape = RoundedCornerShape(99.dp),
-                                        label = {
-                                            Text(
-                                                text = filter.label,
-                                                style = MaterialTheme.typography.labelMedium,
-                                                fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                            )
-                                        },
-                                        colors = FilterChipDefaults.filterChipColors(
-                                            containerColor = MaterialTheme.colorScheme.surface,
-                                            selectedContainerColor = MaterialTheme.colorScheme.primaryContainer,
-                                            selectedLabelColor = MaterialTheme.colorScheme.primary,
-                                        ),
-                                        border = FilterChipDefaults.filterChipBorder(
-                                            enabled = true,
-                                            selected = selected,
-                                            borderColor = marketColors.border,
-                                            selectedBorderColor = MaterialTheme.colorScheme.primary.copy(alpha = 0.55f),
-                                        ),
-                                    )
-                                }
-                            }
-                            item(key = "saved_watchlist_chip") {
-                                val savedSelected = uiState.savedOnlyFilter
-                                val savedCount = uiState.bookmarkedIpoIds.size
-                                FilterChip(
-                                    selected = savedSelected,
-                                    onClick = { onToggleSavedOnly(!savedSelected) },
-                                    modifier = Modifier.testTag("status_chip_saved"),
-                                    shape = RoundedCornerShape(99.dp),
-                                    leadingIcon = {
-                                        Icon(
-                                            imageVector = if (savedSelected || savedCount > 0) {
-                                                Icons.Rounded.Bookmark
-                                            } else {
-                                                Icons.Outlined.BookmarkBorder
-                                            },
-                                            contentDescription = null,
-                                            tint = if (savedSelected) {
-                                                marketColors.smeBadge
-                                            } else {
-                                                marketColors.mutedText
-                                            },
-                                            modifier = Modifier.size(15.dp),
-                                        )
-                                    },
-                                    label = {
-                                        Text(
-                                            text = if (savedCount > 0) "Saved ($savedCount)" else "Saved",
-                                            style = MaterialTheme.typography.labelMedium,
-                                            fontWeight = if (savedSelected) FontWeight.Bold else FontWeight.Medium,
-                                        )
-                                    },
-                                    colors = FilterChipDefaults.filterChipColors(
-                                        containerColor = MaterialTheme.colorScheme.surface,
-                                        selectedContainerColor = marketColors.smeContainer,
-                                        selectedLabelColor = marketColors.smeBadge,
-                                    ),
-                                    border = FilterChipDefaults.filterChipBorder(
-                                        enabled = true,
-                                        selected = savedSelected,
-                                        borderColor = marketColors.border,
-                                        selectedBorderColor = marketColors.smeBadge.copy(alpha = 0.6f),
-                                    ),
-                                )
-                            }
-                        }
-                    }
-
-                    // Quick Sort Bar & Card Density Switcher
-                    item(key = "sort_and_density_bar") {
-                        Row(
-                            modifier = Modifier
-                                .fillMaxWidth()
-                                .testTag("board_sort_row"),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.spacedBy(8.dp),
-                        ) {
-                            Icon(
-                                imageVector = Icons.AutoMirrored.Rounded.Sort,
-                                contentDescription = "Sort IPOs",
-                                tint = marketColors.mutedText,
-                                modifier = Modifier.size(16.dp),
-                            )
-                            LazyRow(
-                                modifier = Modifier.weight(1f),
-                                horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            ) {
-                                items(BoardSortMode.entries) { mode ->
-                                    val selected = uiState.boardSortMode == mode
-                                    Surface(
-                                        onClick = { onSelectBoardSortMode(mode) },
-                                        shape = RoundedCornerShape(99.dp),
-                                        color = if (selected) {
-                                            MaterialTheme.colorScheme.primaryContainer
-                                        } else {
-                                            MaterialTheme.colorScheme.surface
-                                        },
-                                        border = BorderStroke(
-                                            width = if (selected) 1.dp else 0.8.dp,
-                                            color = if (selected) {
-                                                MaterialTheme.colorScheme.primary.copy(alpha = 0.6f)
-                                            } else {
-                                                marketColors.border
-                                            },
-                                        ),
-                                        modifier = Modifier.testTag("sort_chip_${mode.name.lowercase()}"),
-                                    ) {
-                                        Text(
-                                            text = mode.label,
-                                            style = MaterialTheme.typography.labelSmall,
-                                            fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
-                                            color = if (selected) {
-                                                MaterialTheme.colorScheme.primary
-                                            } else {
-                                                MaterialTheme.colorScheme.onSurfaceVariant
-                                            },
-                                            modifier = Modifier.padding(horizontal = 10.dp, vertical = 6.dp),
-                                        )
-                                    }
-                                }
-                            }
-                            Surface(
-                                onClick = { onToggleCompactCards(!uiState.compactCardsEnabled) },
-                                shape = RoundedCornerShape(10.dp),
-                                color = if (uiState.compactCardsEnabled) {
-                                    MaterialTheme.colorScheme.primaryContainer
-                                } else {
-                                    MaterialTheme.colorScheme.surface
-                                },
-                                border = BorderStroke(0.9.dp, marketColors.border),
-                                modifier = Modifier
-                                    .minimumInteractiveComponentSize()
-                                    .testTag("toggle_card_density_btn"),
-                            ) {
-                                Box(
-                                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 6.dp),
-                                    contentAlignment = Alignment.Center,
-                                ) {
-                                    Icon(
-                                        imageVector = if (uiState.compactCardsEnabled) {
-                                            Icons.Outlined.ViewAgenda
-                                        } else {
-                                            Icons.Outlined.ViewStream
-                                        },
-                                        contentDescription = if (uiState.compactCardsEnabled) {
-                                            "Switch to detailed IPO cards"
-                                        } else {
-                                            "Switch to compact IPO cards"
-                                        },
-                                        tint = if (uiState.compactCardsEnabled) {
-                                            MaterialTheme.colorScheme.primary
-                                        } else {
-                                            marketColors.mutedText
-                                        },
-                                        modifier = Modifier.size(18.dp),
-                                    )
-                                }
-                            }
-                        }
+                    // Prominent Main-Screen Compare IPOs Quick Action Strip
+                    item(key = "compare_ipos_banner") {
+                        CompareIposQuickBanner(
+                            ipoCount = uiState.allIpos.size,
+                            onClick = { onOpenCompare(null) },
+                        )
                     }
 
                     if (uiState.isLoading && uiState.filteredIpos.isEmpty()) {
@@ -540,7 +371,7 @@ fun IpoBoardScreen(
                                         text = if (uiState.savedOnlyFilter) {
                                             "Tap the bookmark icon on any IPO card to build your personal watchlist."
                                         } else {
-                                            "Try switching between Current & Upcoming, Listed, or ALL / MAINBOARD / SME tabs."
+                                            "Try switching between Current, Upcoming, Listed, or All / Mainboard / SME tabs."
                                         },
                                         style = MaterialTheme.typography.bodySmall,
                                         color = marketColors.mutedText,
@@ -550,7 +381,7 @@ fun IpoBoardScreen(
                                         onClick = {
                                             onToggleSavedOnly(false)
                                             onSelectBoardSortMode(BoardSortMode.DEFAULT)
-                                            onSelectTimelineTab(BoardTimelineTab.CURRENT_UPCOMING)
+                                            onSelectTimelineTab(BoardTimelineTab.CURRENT)
                                             onSelectBoardFilter(BoardFilter.ALL)
                                             onSelectStatusFilter(StatusFilter.ALL)
                                             onSearchQueryChange("")
@@ -574,6 +405,7 @@ fun IpoBoardScreen(
                                 isListedTab = uiState.timelineTab == BoardTimelineTab.LISTED,
                                 isBookmarked = ipo.id in uiState.bookmarkedIpoIds,
                                 onToggleBookmark = { onToggleBookmarkIpo(ipo.id) },
+                                onCompareClick = { onOpenCompare(ipo.id) },
                                 compactMode = uiState.compactCardsEnabled,
                             )
                             if (index == nativeAdInsertAfterIndex) {
@@ -631,10 +463,10 @@ private fun TimelineSegmentedToggle(
         ) {
             BoardTimelineTab.entries.forEach { tab ->
                 val isSelected = selectedTab == tab
-                val tag = if (tab == BoardTimelineTab.CURRENT_UPCOMING) {
-                    "timeline_tab_current_upcoming"
-                } else {
-                    "timeline_tab_listed"
+                val tag = when (tab) {
+                    BoardTimelineTab.CURRENT -> "timeline_tab_current"
+                    BoardTimelineTab.UPCOMING -> "timeline_tab_upcoming"
+                    BoardTimelineTab.LISTED -> "timeline_tab_listed"
                 }
                 Surface(
                     shape = RoundedCornerShape(99.dp),
@@ -653,7 +485,9 @@ private fun TimelineSegmentedToggle(
                         .testTag(tag),
                 ) {
                     Box(
-                        modifier = Modifier.fillMaxSize(),
+                        modifier = Modifier
+                            .fillMaxSize()
+                            .padding(horizontal = 6.dp),
                         contentAlignment = Alignment.Center,
                     ) {
                         Text(
@@ -678,77 +512,103 @@ private fun TimelineSegmentedToggle(
 @Composable
 private fun MarketPulseBanner(
     lastSyncedLabel: String,
+    subscriptionSourcesStatusLine: String? = null,
     isRefreshingGmp: Boolean,
     onRefreshGmp: () -> Unit,
     onOpenRadar: () -> Unit,
 ) {
     val marketColors = LocalMarketColors.current
-    Box(
+    val glass = LocalGlassStyle.current
+    val bannerSurfaceShape = RoundedCornerShape(16.dp)
+    Surface(
+        shape = bannerSurfaceShape,
+        color = if (glass.isDark) MaterialTheme.colorScheme.surface else Color.Transparent,
+        border = if (glass.isDark) BorderStroke(1.dp, marketColors.border) else null,
         modifier = Modifier
             .fillMaxWidth()
-            .clip(RoundedCornerShape(16.dp))
-            .background(
-                Brush.linearGradient(
-                    colors = listOf(
-                        Color(0xFF0E1320),
-                        Color(0xFF17223B),
-                    ),
-                ),
-            )
-            .padding(horizontal = 13.dp, vertical = 10.dp)
             .testTag("market_pulse_banner"),
     ) {
-        Row(
-            modifier = Modifier.fillMaxWidth(),
-            horizontalArrangement = Arrangement.SpaceBetween,
-            verticalAlignment = Alignment.CenterVertically,
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .then(
+                    if (glass.isDark) {
+                        Modifier
+                    } else {
+                        Modifier.background(
+                            Brush.linearGradient(
+                                colors = listOf(
+                                    Color(0xFF18181B),
+                                    Color(0xFF27272A),
+                                ),
+                            ),
+                        )
+                    },
+                )
+                .padding(horizontal = 13.dp, vertical = 10.dp),
         ) {
-            Column(modifier = Modifier.weight(1f)) {
-                Row(
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(5.dp),
-                ) {
-                    Text(
-                        text = "Last Sync",
-                        style = MaterialTheme.typography.labelSmall,
-                        fontWeight = FontWeight.SemiBold,
-                        color = Color(0xFF93C5FD),
-                        maxLines = 1,
-                        overflow = TextOverflow.Ellipsis,
-                    )
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                horizontalArrangement = Arrangement.SpaceBetween,
+                verticalAlignment = Alignment.CenterVertically,
+            ) {
+                Column(modifier = Modifier.weight(1f)) {
                     Row(
                         verticalAlignment = Alignment.CenterVertically,
-                        horizontalArrangement = Arrangement.spacedBy(2.dp),
-                        modifier = Modifier.testTag("verified_filings_badge"),
+                        horizontalArrangement = Arrangement.spacedBy(5.dp),
                     ) {
-                        Icon(
-                            imageVector = Icons.Outlined.VerifiedUser,
-                            contentDescription = "Multi-source verified filings",
-                            tint = Color(0xFF6EE7B7),
-                            modifier = Modifier.size(11.dp),
-                        )
                         Text(
-                            text = "Verified",
-                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            text = "Last Sync",
+                            style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
-                            color = Color(0xFFA7F3D0),
+                            color = if (glass.isDark) marketColors.mutedText else Color(0xFFD4D4D8),
                             maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                        )
+                        Row(
+                            verticalAlignment = Alignment.CenterVertically,
+                            horizontalArrangement = Arrangement.spacedBy(2.dp),
+                            modifier = Modifier.testTag("verified_filings_badge"),
+                        ) {
+                            Icon(
+                                imageVector = Icons.Outlined.VerifiedUser,
+                                contentDescription = "Multi-source verified filings",
+                                tint = Color(0xFF4ADE80),
+                                modifier = Modifier.size(11.dp),
+                            )
+                            Text(
+                                text = "Verified",
+                                style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                                fontWeight = FontWeight.SemiBold,
+                                color = Color(0xFF86EFAC),
+                                maxLines = 1,
+                            )
+                        }
+                    }
+                    Spacer(modifier = Modifier.height(1.dp))
+                    Text(
+                        text = lastSyncedLabel,
+                        style = MonoNumericStyle.copy(
+                            fontSize = MaterialTheme.typography.labelMedium.fontSize,
+                            fontWeight = FontWeight.Bold,
+                        ),
+                        color = if (glass.isDark) MaterialTheme.colorScheme.onSurface else Color.White,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                        modifier = Modifier.testTag("last_sync_datetime"),
+                    )
+                    if (!subscriptionSourcesStatusLine.isNullOrBlank()) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = subscriptionSourcesStatusLine,
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 9.5.sp),
+                            color = if (glass.isDark) marketColors.mutedText else Color(0xFFA1A1AA),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.testTag("board_subscription_sources_status"),
                         )
                     }
                 }
-                Spacer(modifier = Modifier.height(1.dp))
-                Text(
-                    text = lastSyncedLabel,
-                    style = MonoNumericStyle.copy(
-                        fontSize = MaterialTheme.typography.labelMedium.fontSize,
-                        fontWeight = FontWeight.Bold,
-                    ),
-                    color = Color.White,
-                    maxLines = 1,
-                    overflow = TextOverflow.Ellipsis,
-                    modifier = Modifier.testTag("last_sync_datetime"),
-                )
-            }
 
             Spacer(modifier = Modifier.width(8.dp))
 
@@ -796,8 +656,8 @@ private fun MarketPulseBanner(
                 Surface(
                     onClick = onOpenRadar,
                     shape = RoundedCornerShape(99.dp),
-                    color = Color(0x26FFFFFF),
-                    border = BorderStroke(1.dp, Color(0x4094A3B8)),
+                    color = if (glass.isDark) MaterialTheme.colorScheme.surfaceVariant else Color(0x26FFFFFF),
+                    border = BorderStroke(1.dp, if (glass.isDark) marketColors.border else Color(0x4094A3B8)),
                     modifier = Modifier
                         .minimumInteractiveComponentSize()
                         .testTag("open_radar_button"),
@@ -817,16 +677,120 @@ private fun MarketPulseBanner(
                             text = "Live Sub",
                             style = MaterialTheme.typography.labelSmall,
                             fontWeight = FontWeight.SemiBold,
-                            color = Color.White,
+                            color = if (glass.isDark) MaterialTheme.colorScheme.onSurface else Color.White,
                             maxLines = 1,
                         )
                         Icon(
                             imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
                             contentDescription = "Open GMP and Live Subscription Radar",
-                            tint = Color(0xFFCBD5E1),
+                            tint = if (glass.isDark) marketColors.mutedText else Color(0xFFCBD5E1),
                             modifier = Modifier.size(15.dp),
                         )
                     }
+                }
+            }
+        }
+    }
+    }
+}
+
+@Composable
+private fun CompareIposQuickBanner(
+    ipoCount: Int,
+    onClick: () -> Unit,
+) {
+    val marketColors = LocalMarketColors.current
+    val glass = LocalGlassStyle.current
+
+    Surface(
+        onClick = onClick,
+        shape = RoundedCornerShape(16.dp),
+        color = glass.cardFill,
+        contentColor = MaterialTheme.colorScheme.onSurface,
+        border = glassBorderStroke(
+            glass = glass,
+            width = 1.dp,
+            accentTint = null,
+        ),
+        modifier = Modifier
+            .fillMaxWidth()
+            .minimumInteractiveComponentSize()
+            .testTag("board_compare_ipos_button"),
+    ) {
+        Row(
+            modifier = Modifier
+                .fillMaxWidth()
+                .padding(horizontal = 13.dp, vertical = 10.dp),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically,
+        ) {
+            Row(
+                modifier = Modifier.weight(1f),
+                verticalAlignment = Alignment.CenterVertically,
+                horizontalArrangement = Arrangement.spacedBy(10.dp),
+            ) {
+                Box(
+                    modifier = Modifier
+                        .size(36.dp)
+                        .clip(RoundedCornerShape(11.dp))
+                        .background(MaterialTheme.colorScheme.surfaceVariant),
+                    contentAlignment = Alignment.Center,
+                ) {
+                    Icon(
+                        imageVector = Icons.Outlined.Balance,
+                        contentDescription = null,
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(19.dp),
+                    )
+                }
+                Column(modifier = Modifier.weight(1f)) {
+                    Text(
+                        text = "Compare IPOs",
+                        style = MaterialTheme.typography.titleSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                    Text(
+                        text = if (ipoCount >= 2) {
+                            "Side-by-side GMP, Valuation & Subscription"
+                        } else {
+                            "Compare GMP, Dates & Subscription"
+                        },
+                        style = MaterialTheme.typography.bodySmall,
+                        color = marketColors.mutedText,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis,
+                    )
+                }
+            }
+
+            Spacer(modifier = Modifier.width(8.dp))
+
+            Surface(
+                shape = RoundedCornerShape(99.dp),
+                color = MaterialTheme.colorScheme.surfaceVariant,
+                border = BorderStroke(0.8.dp, marketColors.border),
+            ) {
+                Row(
+                    modifier = Modifier.padding(start = 11.dp, end = 7.dp, top = 6.dp, bottom = 6.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(2.dp),
+                ) {
+                    Text(
+                        text = "Compare",
+                        style = MaterialTheme.typography.labelSmall,
+                        fontWeight = FontWeight.Bold,
+                        color = MaterialTheme.colorScheme.onSurface,
+                        maxLines = 1,
+                    )
+                    Icon(
+                        imageVector = Icons.AutoMirrored.Rounded.KeyboardArrowRight,
+                        contentDescription = "Open Compare IPOs",
+                        tint = MaterialTheme.colorScheme.onSurface,
+                        modifier = Modifier.size(15.dp),
+                    )
                 }
             }
         }
@@ -913,6 +877,60 @@ private fun IpoShimmerSkeletonCard(modifier: Modifier = Modifier) {
                             .background(placeholderColor),
                     )
                 }
+            }
+        }
+    }
+}
+
+@Composable
+private fun BoardSegmentFilterRow(
+    selectedFilter: BoardFilter,
+    onSelectFilter: (BoardFilter) -> Unit,
+    modifier: Modifier = Modifier,
+) {
+    val glass = LocalGlassStyle.current
+    val options = listOf(
+        Triple(BoardFilter.ALL, "All India", "board_filter_all"),
+        Triple(BoardFilter.MAINBOARD, "Mainboard", "board_filter_mainboard"),
+        Triple(BoardFilter.SME, "SME", "board_filter_sme"),
+    )
+    Row(
+        modifier = modifier
+            .glassPanel(
+                glass = glass,
+                shape = RoundedCornerShape(14.dp),
+                fillColor = glass.pillFill,
+            )
+            .padding(3.dp),
+        horizontalArrangement = Arrangement.spacedBy(4.dp),
+    ) {
+        options.forEach { (filter, label, tag) ->
+            val selected = selectedFilter == filter
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .clip(RoundedCornerShape(11.dp))
+                    .background(
+                        if (selected) MaterialTheme.colorScheme.primaryContainer else Color.Transparent,
+                    )
+                    .clickable { onSelectFilter(filter) }
+                    .padding(vertical = 7.dp, horizontal = 6.dp)
+                    .testTag(tag),
+                contentAlignment = Alignment.Center,
+            ) {
+                Text(
+                    text = label,
+                    style = MaterialTheme.typography.labelMedium,
+                    fontWeight = if (selected) FontWeight.Bold else FontWeight.Medium,
+                    color = if (selected) {
+                        MaterialTheme.colorScheme.primary
+                    } else {
+                        MaterialTheme.colorScheme.onSurfaceVariant
+                    },
+                    maxLines = 1,
+                    softWrap = false,
+                    overflow = TextOverflow.Ellipsis,
+                )
             }
         }
     }
