@@ -30,6 +30,38 @@ export interface IpoBundleItem {
   registrarName: string;
   registrarUrl: string;
   sources: string[];
+  lastSeenAtMs?: number;
+}
+
+export interface DroppedByReason {
+  tooOld: number;
+  tooFarFuture: number;
+  noDates: number;
+  placeholder: number;
+  withdrawn: number;
+  overCap: number;
+}
+
+export interface FieldCoverageCounts {
+  gmpRupees: number;
+  openDate: number;
+  closeDate: number;
+  allotmentDate: number;
+  listingDate: number;
+  qibSubX: number;
+  bNiiSubX: number;
+  sNiiSubX: number;
+  retailSubX: number;
+}
+
+export interface SelectionStats {
+  maxIpos: number;
+  beforeCap: number;
+  afterCap: number;
+  byStatus: Record<IpoStatus, number>;
+  byBoardType: Record<BoardType, number>;
+  droppedByReason: DroppedByReason;
+  fieldCoverage: FieldCoverageCounts;
 }
 
 export interface IpoLiveBundleDoc {
@@ -58,6 +90,8 @@ export interface RawIpoRecord {
   source: string;
   /** True when the source is an exchange authority (NSE/BSE). */
   isAuthoritative?: boolean;
+  /** True when source explicitly marks the IPO as withdrawn/cancelled/postponed. */
+  isWithdrawn?: boolean;
   /** Optional provider-reported status hint. */
   statusHint?: IpoStatus;
   openDate?: string;

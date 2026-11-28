@@ -9,6 +9,7 @@ import com.example.data.model.IpoEntity
 import com.example.data.model.IpoOverrideMerger
 import com.example.data.model.IpoStatus
 import com.example.data.model.ValuationMetrics
+import com.example.data.preferences.UserPreferencesRepository
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.async
 import kotlinx.coroutines.coroutineScope
@@ -37,6 +38,8 @@ data class GmpSyncSummary(
         .distinct()
         .size,
     val subscriptionSourceStatuses: List<SubscriptionSourceStatus> = emptyList(),
+    val dataBundleLastSuccessAtMs: Long = 0L,
+    val skippedByRefreshGuard: Boolean = false,
 )
 
 data class SubscriptionRefreshResult(
@@ -51,12 +54,23 @@ data class SubscriptionRefreshResult(
 
 class IpoRepository(
     private val ipoDao: IpoDao,
-    private val liveGmpRepository: LiveGmpRepository = LiveGmpRepository(),
+    private val liveGmpRepository: LiveGmpRepository = LiveGmpRepository(enableNetworkFetch = false),
     private val liveSubscriptionRepository: LiveSubscriptionRepository = LiveSubscriptionRepository(
         enableNetworkFetch = liveGmpRepository.enableNetworkFetch,
     ),
     private val adminOverrideRepository: AdminOverrideRepository? = null,
+    private val liveIpoCloudRepository: LiveIpoCloudRepository? = null,
+    private val preferencesRepository: UserPreferencesRepository? = null,
+    private val clockMs: () -> Long = { System.currentTimeMillis() },
 ) {
+    @Volatile
+    private var lastSuccessfulCloudReadAtMs: Long = 0L
+
+    @Volatile
+    private var lastManualRefreshAtMs: Long = 0L
+
+    @Volatile
+    private var lastBundleSuccessAtMs: Long = 0L
     private val customIpoLiveSubscriptions =
         MutableStateFlow<Map<String, Pair<LiveSubscriptionQuote, String>>>(emptyMap())
 
@@ -104,52 +118,245 @@ class IpoRepository(
         syncCatalogOnAppOpen()
     }
 
-    suspend fun syncCatalogOnAppOpen(): String = syncWithLiveGmp().syncedAtTime
+    suspend fun syncCatalogOnAppOpen(): String = syncWithLiveGmp(forceManual = false).syncedAtTime
 
-    suspend fun syncWithLiveGmp(): GmpSyncSummary = withContext(Dispatchers.IO) {
-        val (gmpSnapshot, subSnapshot) = coroutineScope {
-            val gmpDeferred = async { liveGmpRepository.fetchLatestGmps() }
-            val subDeferred = async { liveSubscriptionRepository.fetchLatestSubscriptions(forceRefresh = true) }
+    suspend fun syncWithLiveGmp(
+        forceManual: Boolean = false,
+    ): GmpSyncSummary = withContext(Dispatchers.IO) {
+        val nowMs = clockMs()
+        val existingRows = ipoDao.getAllSnapshot()
+        hydrateRefreshTimestampsFromPreferences()
+
+        val canReadFromCloud = shouldFetchFromCloud(
+            forceManual = forceManual,
+            nowMs = nowMs,
+            hasExistingRoomRows = existingRows.isNotEmpty(),
+        )
+
+        if (!canReadFromCloud) {
+            val effectiveRows = if (existingRows.isEmpty()) {
+                seedRoomIfCompletelyEmpty()
+            } else {
+                existingRows
+            }
+            val bundleTs = lastBundleSuccessAtMs
+            val label = if (bundleTs > 0L) {
+                LiveIpoCloudRepository.formatUpdatedAgoLabel(bundleTs, nowMs)
+            } else {
+                ""
+            }
+            return@withContext GmpSyncSummary(
+                syncedAtTime = label,
+                updatedExistingCount = 0,
+                discoveredLiveCount = 0,
+                activeSources = emptyList(),
+                isLiveFromNetwork = false,
+                previousIpos = existingRows,
+                updatedIpos = effectiveRows,
+                dataBundleLastSuccessAtMs = bundleTs,
+                skippedByRefreshGuard = true,
+            )
+        }
+
+        if (forceManual) {
+            lastManualRefreshAtMs = nowMs
+        }
+
+        val cloudRepo = liveIpoCloudRepository
+        if (cloudRepo == null) {
+            return@withContext applyCloudBundleToDatabase(snapshot = null, nowMs = nowMs)
+        }
+
+        val cloudSnapshot = coroutineScope {
+            val bundleDeferred = async { cloudRepo.fetchLiveBundleOnce() }
             val overridesDeferred = async { adminOverrideRepository?.fetchPublishedCloudOverridesOnce() }
             overridesDeferred.await()
-            gmpDeferred.await() to subDeferred.await()
+            bundleDeferred.await()
         }
-        // Save fetched subscription snapshot BEFORE applySnapshotToDatabase() so an empty GMP
-        // response never discards valid live subscription numbers.
-        if (subSnapshot.allQuotes.isNotEmpty()) {
-            applySubscriptionSnapshotToDatabase(subSnapshot)
+
+        applyCloudBundleToDatabase(snapshot = cloudSnapshot, nowMs = nowMs)
+    }
+
+    internal suspend fun applyCloudBundleToDatabase(
+        snapshot: CloudIpoBundleSnapshot?,
+        nowMs: Long = clockMs(),
+    ): GmpSyncSummary {
+        val existingRows = ipoDao.getAllSnapshot()
+        val isEmptyOrCacheEmpty = snapshot == null ||
+            !snapshot.documentExists ||
+            snapshot.ipos.isEmpty() ||
+            (snapshot.isFromCache && snapshot.ipos.isEmpty())
+
+        if (isEmptyOrCacheEmpty) {
+            // Never wipe Room on an empty snapshot or empty fromCache snapshot.
+            if (existingRows.isNotEmpty()) {
+                val bundleTs = lastBundleSuccessAtMs
+                val label = if (bundleTs > 0L) {
+                    LiveIpoCloudRepository.formatUpdatedAgoLabel(bundleTs, nowMs)
+                } else {
+                    ""
+                }
+                return GmpSyncSummary(
+                    syncedAtTime = label,
+                    updatedExistingCount = 0,
+                    discoveredLiveCount = 0,
+                    activeSources = emptyList(),
+                    isLiveFromNetwork = false,
+                    previousIpos = existingRows,
+                    updatedIpos = existingRows,
+                    dataBundleLastSuccessAtMs = bundleTs,
+                )
+            }
+            // Seed data is ONLY the first-launch offline fallback when Room is completely empty.
+            val initialSeed = seedRoomIfCompletelyEmpty()
+            return GmpSyncSummary(
+                syncedAtTime = "",
+                updatedExistingCount = 0,
+                discoveredLiveCount = 0,
+                activeSources = emptyList(),
+                isLiveFromNetwork = false,
+                previousIpos = emptyList(),
+                updatedIpos = initialSeed,
+                dataBundleLastSuccessAtMs = 0L,
+            )
         }
-        // Re-read Room AFTER network fetches and subscription save so updates aren't overwritten.
-        val freshExistingById = ipoDao.getAllSnapshot().associateBy { it.id }
-        applySnapshotToDatabase(
-            existingById = freshExistingById,
-            gmpSnapshot = gmpSnapshot,
-            subscriptionSnapshot = subSnapshot,
+
+        val bundle = snapshot!!
+        val effectiveBundleTs = bundle.lastSuccessAtMs.takeIf { it > 0L } ?: nowMs
+        val updatedAgoLabel = LiveIpoCloudRepository.formatUpdatedAgoLabel(effectiveBundleTs, nowMs)
+        val existingById = existingRows.associateBy { it.id }
+
+        var updatedExistingCount = 0
+        var discoveredLiveCount = 0
+        val mergedEntities = bundle.ipos.mapIndexed { index, incoming ->
+            val saved = existingById[incoming.id] ?: existingRows.firstOrNull { old ->
+                liveGmpRepository.areSameCompanyNames(
+                    nameA = old.companyName,
+                    nameB = incoming.companyName,
+                    boardA = old.boardType,
+                    boardB = incoming.boardType,
+                )
+            }
+            if (saved != null) {
+                updatedExistingCount++
+            } else {
+                discoveredLiveCount++
+            }
+            val mergedGmpHistory = if (saved != null && saved.gmpHistory.size >= 2 && incoming.gmpHistory.isNotEmpty()) {
+                saved.gmpHistory.dropLast(1) + incoming.gmpHistory.last()
+            } else {
+                incoming.gmpHistory
+            }
+            incoming.copy(
+                isWatchlisted = saved?.isWatchlisted ?: incoming.isWatchlisted,
+                userLots = saved?.userLots ?: incoming.userLots,
+                dailySubscriptions = saved?.dailySubscriptions?.takeIf { it.isNotEmpty() }
+                    ?: incoming.dailySubscriptions,
+                liveApplicationCounts = saved?.liveApplicationCounts?.takeIf { it.isNotEmpty() }
+                    ?: incoming.liveApplicationCounts,
+                gmpHistory = mergedGmpHistory,
+                updatedAgoLabel = updatedAgoLabel,
+                sortOrder = index + 1,
+            )
+        }
+
+        val finalCatalog = deduplicateCatalog(mergedEntities)
+        val effectiveUpdatedIpos = if (finalCatalog.isNotEmpty()) {
+            ipoDao.replaceCatalog(finalCatalog, finalCatalog.map { it.id })
+            lastSuccessfulCloudReadAtMs = nowMs
+            lastBundleSuccessAtMs = effectiveBundleTs
+            preferencesRepository?.recordCloudBundleSync(
+                readAtMs = nowMs,
+                bundleSuccessAtMs = effectiveBundleTs,
+            )
+            finalCatalog
+        } else {
+            existingRows
+        }
+
+        val sourceStatuses = buildList {
+            bundle.sourcesOk.forEach { src ->
+                add(SubscriptionSourceStatus(sourceName = src, ok = true))
+            }
+            bundle.sourcesFailed.forEach { src ->
+                add(SubscriptionSourceStatus(sourceName = src, ok = false, reason = "Unavailable"))
+            }
+        }
+        val activeSources = bundle.sourcesOk.ifEmpty { listOf("Firestore Cloud") }
+
+        return GmpSyncSummary(
+            syncedAtTime = updatedAgoLabel,
+            updatedExistingCount = updatedExistingCount,
+            discoveredLiveCount = discoveredLiveCount,
+            activeSources = activeSources,
+            isLiveFromNetwork = !bundle.isFromCache,
+            previousIpos = existingRows,
+            updatedIpos = effectiveUpdatedIpos,
+            excludedUnconfirmedCount = 0,
+            verifiedProviderCount = activeSources
+                .mapNotNull { IpoFilingVerifier.providerFamily(it).takeIf { f -> f.isNotBlank() } }
+                .distinct()
+                .size,
+            subscriptionSourceStatuses = sourceStatuses,
+            dataBundleLastSuccessAtMs = effectiveBundleTs,
         )
+    }
+
+    private suspend fun hydrateRefreshTimestampsFromPreferences() {
+        val prefs = preferencesRepository ?: return
+        if (lastSuccessfulCloudReadAtMs == 0L) {
+            lastSuccessfulCloudReadAtMs = runCatching { prefs.getLastCloudReadSuccessMs() }.getOrDefault(0L)
+        }
+        if (lastBundleSuccessAtMs == 0L) {
+            lastBundleSuccessAtMs = runCatching { prefs.getLastBundleSuccessAtMs() }.getOrDefault(0L)
+        }
+    }
+
+    internal fun shouldFetchFromCloud(
+        forceManual: Boolean,
+        nowMs: Long,
+        hasExistingRoomRows: Boolean,
+    ): Boolean {
+        if (forceManual) {
+            return lastManualRefreshAtMs == 0L || (nowMs - lastManualRefreshAtMs) >= MANUAL_REFRESH_INTERVAL_MS
+        }
+        if (!hasExistingRoomRows) return true
+        if (lastSuccessfulCloudReadAtMs == 0L) return true
+        return (nowMs - lastSuccessfulCloudReadAtMs) >= APP_OPEN_REFRESH_INTERVAL_MS
+    }
+
+    private suspend fun seedRoomIfCompletelyEmpty(): List<IpoEntity> {
+        val initialSeed = deduplicateCatalog(
+            IpoSeedData.createInitialCatalog().filter { IpoFilingVerifier.isVerifiedFiledEntity(it) },
+        ).filter { IpoFilingVerifier.isDisplayableEntity(it) }
+        if (initialSeed.isNotEmpty()) {
+            ipoDao.replaceCatalog(initialSeed, initialSeed.map { it.id })
+        }
+        return initialSeed
     }
 
     suspend fun refreshLiveSubscriptionsOnly(
         force: Boolean = true,
     ): SubscriptionRefreshResult = withContext(Dispatchers.IO) {
-        val snapshot = liveSubscriptionRepository.fetchLatestSubscriptions(forceRefresh = force)
-        val matchedCount = applySubscriptionSnapshotToDatabase(snapshot)
-        val hasLiveData = snapshot.activeSources.isNotEmpty()
-        val sourceLabel = snapshot.activeSources
+        val summary = syncWithLiveGmp(forceManual = force)
+        val hasCloudData = summary.activeSources.isNotEmpty()
+        val sourceLabel = summary.activeSources
             .take(3)
             .joinToString(" • ")
-            .ifBlank { "NSE / Chittorgarh / InvestorGain" }
+            .ifBlank { "Firestore Cloud" }
+        val statusMessage = when {
+            summary.skippedByRefreshGuard -> "Recently synced • Try again in a moment"
+            hasCloudData -> summary.syncedAtTime.ifBlank { "Live IPO data synced" }
+            else -> "Couldn't refresh live subscription right now"
+        }
         SubscriptionRefreshResult(
-            updated = matchedCount > 0,
-            syncedAtLabel = if (hasLiveData) snapshot.syncedAtTime else "",
+            updated = hasCloudData,
+            syncedAtLabel = if (hasCloudData) summary.syncedAtTime else "",
             sourceLabel = sourceLabel,
-            statusMessage = if (hasLiveData) {
-                "Live subscription synced • ${snapshot.syncedAtTime}"
-            } else {
-                "Couldn't refresh live subscription right now"
-            },
-            matchedQuotesCount = matchedCount,
-            hasLiveSourceData = hasLiveData,
-            sourceStatuses = snapshot.sourceStatuses,
+            statusMessage = statusMessage,
+            matchedQuotesCount = summary.updatedExistingCount + summary.discoveredLiveCount,
+            hasLiveSourceData = hasCloudData,
+            sourceStatuses = summary.subscriptionSourceStatuses,
         )
     }
 
@@ -157,6 +364,7 @@ class IpoRepository(
         ipoId: String,
         force: Boolean = true,
     ): SubscriptionRefreshResult = withContext(Dispatchers.IO) {
+        val summary = syncWithLiveGmp(forceManual = force)
         val allExisting = ipoDao.getAllSnapshot()
         val cachedOverrides = adminOverrideRepository?.getCachedOverridesSnapshot().orEmpty()
         val targetFromBase = allExisting.firstOrNull { it.id == ipoId }
@@ -167,40 +375,30 @@ class IpoRepository(
             null
         }
         val target = targetFromBase ?: targetFromOverride
-        val snapshot = liveSubscriptionRepository.fetchLatestSubscriptions(
-            forceRefresh = force,
-            targetSymbol = target?.shortCode,
-            targetCompanyName = target?.companyName,
-        )
-        val matchedCount = applySubscriptionSnapshotToDatabase(snapshot)
-        val updatedTarget = ipoDao.getAllSnapshot().firstOrNull { it.id == ipoId } ?: targetFromOverride
-        val matchedQuote = target?.let { liveSubscriptionRepository.findMatchingQuote(it, snapshot.allQuotes) }
-        val targetMatched = matchedQuote != null
-        val hasLiveData = snapshot.activeSources.isNotEmpty()
-        val sourceLabel = matchedQuote?.sourceName?.ifBlank { null }
-            ?: snapshot.activeSources
-                .take(3)
-                .joinToString(" • ")
-                .ifBlank { "NSE / Chittorgarh / InvestorGain" }
+        val hasCloudData = summary.activeSources.isNotEmpty()
+        val sourceLabel = summary.activeSources
+            .take(3)
+            .joinToString(" • ")
+            .ifBlank { "Firestore Cloud" }
 
         val message = when {
-            matchedQuote != null -> "Live synced from ${matchedQuote.sourceName} • ${snapshot.syncedAtTime}"
-            matchedCount > 0 -> "Synced $matchedCount active IPOs • No live update published for this issue yet"
-            updatedTarget != null && updatedTarget.status == IpoStatus.UPCOMING ->
-                "Bidding opens on ${updatedTarget.openDate} • Live updates start at 10:00 AM IST"
-            hasLiveData ->
-                "Checked $sourceLabel • Awaiting latest exchange update"
-            else -> "Exchange feeds busy • Couldn't refresh now"
+            summary.skippedByRefreshGuard && summary.syncedAtTime.isNotBlank() -> summary.syncedAtTime
+            summary.skippedByRefreshGuard -> "Recently synced • Please wait a minute before refreshing again"
+            hasCloudData && target != null -> summary.syncedAtTime.ifBlank { "Live data synced" }
+            target != null && target.status == IpoStatus.UPCOMING ->
+                "Bidding opens on ${target.openDate} • Live updates start at 10:00 AM IST"
+            hasCloudData -> summary.syncedAtTime.ifBlank { "Live data synced" }
+            else -> "Couldn't refresh right now"
         }
 
         SubscriptionRefreshResult(
-            updated = targetMatched || matchedCount > 0,
-            syncedAtLabel = if (hasLiveData) snapshot.syncedAtTime else "",
+            updated = hasCloudData,
+            syncedAtLabel = if (hasCloudData || summary.skippedByRefreshGuard) summary.syncedAtTime else "",
             sourceLabel = sourceLabel,
             statusMessage = message,
-            matchedQuotesCount = matchedCount,
-            hasLiveSourceData = hasLiveData,
-            sourceStatuses = snapshot.sourceStatuses,
+            matchedQuotesCount = summary.updatedExistingCount + summary.discoveredLiveCount,
+            hasLiveSourceData = hasCloudData || (summary.skippedByRefreshGuard && summary.dataBundleLastSuccessAtMs > 0L),
+            sourceStatuses = summary.subscriptionSourceStatuses,
         )
     }
 
@@ -743,9 +941,15 @@ class IpoRepository(
         IpoStatus.CLOSED -> 3
     }
 
-    suspend fun refreshMarketPulse(): String = syncWithLiveGmp().syncedAtTime
+    suspend fun refreshMarketPulse(forceManual: Boolean = false): String =
+        syncWithLiveGmp(forceManual = forceManual).syncedAtTime
 
     suspend fun updateUserLots(id: String, lots: Int) {
         ipoDao.updateUserLots(id = id, lots = lots.coerceIn(1, 200))
+    }
+
+    companion object {
+        const val APP_OPEN_REFRESH_INTERVAL_MS = 10L * 60L * 1000L
+        const val MANUAL_REFRESH_INTERVAL_MS = 60L * 1000L
     }
 }

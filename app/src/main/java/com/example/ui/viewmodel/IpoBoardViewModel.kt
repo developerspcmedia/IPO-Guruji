@@ -21,11 +21,13 @@ import com.example.data.repository.GmpSyncSummary
 import com.example.data.repository.IpoFilingVerifier
 import com.example.data.repository.IpoNewsRepository
 import com.example.data.repository.IpoRepository
+import com.example.data.repository.LiveIpoCloudRepository
 import com.example.data.repository.LiveSubscriptionRepository
 import com.example.notifications.IpoNotificationManager
 import com.example.widget.IpoLiveWidgetProvider
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
+import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -98,7 +100,9 @@ data class IpoBoardUiState(
     val isRefreshing: Boolean = false,
     val isRefreshingGmp: Boolean = false,
     val lastSyncedLabel: String = "Syncing...",
-    val liveGmpSourcesLabel: String = "NSE India • InvestorGain • IPOWatch • Chittorgarh • IPO Central",
+    val dataUpdatedAtMs: Long = 0L,
+    val isDataDelayed: Boolean = false,
+    val liveGmpSourcesLabel: String = "Firestore Cloud • NSE • Chittorgarh • InvestorGain • IPOWatch",
     val gmpStatusMessage: String? = null,
     val subscriptionSourcesStatusLine: String? = null,
     val liveNewsSourcesLabel: String = "ET IPO • LiveMint • Google News",
@@ -120,6 +124,7 @@ class IpoBoardViewModel(
     private val preferencesRepository: UserPreferencesRepository,
     private val newsRepository: IpoNewsRepository = IpoNewsRepository(),
     private val appContext: Context? = null,
+    private val clockMs: () -> Long = { System.currentTimeMillis() },
 ) : ViewModel() {
 
     private val boardFilter = MutableStateFlow(BoardFilter.ALL)
@@ -134,7 +139,9 @@ class IpoBoardViewModel(
     private val isRefreshingGmp = MutableStateFlow(false)
     private val newsArticles = MutableStateFlow(IpoNewsCatalog.getLatestNews())
     private val lastSyncedLabel = MutableStateFlow("Syncing...")
-    private val liveGmpSourcesLabel = MutableStateFlow("NSE India • InvestorGain • IPOWatch • Chittorgarh • IPO Central")
+    private val dataUpdatedAtMs = MutableStateFlow(0L)
+    private val isDataDelayed = MutableStateFlow(false)
+    private val liveGmpSourcesLabel = MutableStateFlow("Firestore Cloud • NSE • Chittorgarh • InvestorGain • IPOWatch")
     private val gmpStatusMessage = MutableStateFlow<String?>(null)
     private val subscriptionSourcesStatusLine = MutableStateFlow<String?>(null)
     private val liveNewsSourcesLabel = MutableStateFlow("ET IPO • LiveMint • Google News")
@@ -144,6 +151,14 @@ class IpoBoardViewModel(
     private var boardPollJob: Job? = null
 
     init {
+        viewModelScope.launch {
+            val persistedBundleTs = runCatching {
+                preferencesRepository.getLastBundleSuccessAtMs()
+            }.getOrDefault(0L)
+            if (persistedBundleTs > 0L && dataUpdatedAtMs.value == 0L) {
+                applyBundleFreshnessTimestamp(persistedBundleTs, clockMs())
+            }
+        }
         refreshAllOnOpen()
     }
 
@@ -185,17 +200,27 @@ class IpoBoardViewModel(
         SyncStatus(refreshing, refreshingGmp, syncedLabel, gmpSources, statusMsg)
     }
 
+    private val freshnessMetaFlow = combine(
+        dataUpdatedAtMs,
+        isDataDelayed,
+    ) { updatedAtMs, delayed ->
+        updatedAtMs to delayed
+    }
+
     private val syncMetaFlow = combine(
         syncStatusFlow,
         newsArticles,
         liveNewsSourcesLabel,
         subscriptionSourcesStatusLine,
-    ) { status, articles, sourcesLabel, subSourcesLine ->
+        freshnessMetaFlow,
+    ) { status, articles, sourcesLabel, subSourcesLine, freshness ->
         SyncMeta(
             isRefreshing = status.isRefreshing,
             isRefreshingGmp = status.isRefreshingGmp,
             newsArticles = articles,
             lastSyncedLabel = status.lastSyncedLabel,
+            dataUpdatedAtMs = freshness.first,
+            isDataDelayed = freshness.second,
             liveGmpSourcesLabel = status.liveGmpSourcesLabel,
             gmpStatusMessage = status.gmpStatusMessage,
             subscriptionSourcesStatusLine = subSourcesLine,
@@ -410,6 +435,8 @@ class IpoBoardViewModel(
             isRefreshing = syncMeta.isRefreshing,
             isRefreshingGmp = syncMeta.isRefreshingGmp,
             lastSyncedLabel = syncMeta.lastSyncedLabel,
+            dataUpdatedAtMs = syncMeta.dataUpdatedAtMs,
+            isDataDelayed = syncMeta.isDataDelayed,
             liveGmpSourcesLabel = syncMeta.liveGmpSourcesLabel,
             gmpStatusMessage = syncMeta.gmpStatusMessage,
             subscriptionSourcesStatusLine = syncMeta.subscriptionSourcesStatusLine,
@@ -440,28 +467,20 @@ class IpoBoardViewModel(
     )
 
     fun refreshAllOnOpen() {
-        refreshMarketPulse()
+        refreshMarketPulse(isManual = false)
     }
 
     fun onAppForegrounded() {
-        val elapsedMs = System.currentTimeMillis() - lastSyncEpochMs
-        if (elapsedMs > 30_000L) {
-            refreshMarketPulse()
-        }
+        refreshFreshnessIndicators()
+        refreshMarketPulse(isManual = false)
     }
 
     fun onBoardVisible() {
         isBoardVisible = true
-        if (boardPollJob?.isActive == true) return
-        boardPollJob = viewModelScope.launch {
-            while (isActive && isBoardVisible) {
-                delay(LiveSubscriptionRepository.BOARD_POLL_INTERVAL_MS)
-                if (!isBoardVisible) break
-                if (LiveSubscriptionRepository.shouldPollBoard(uiState.value.allIpos)) {
-                    refreshBoardSubscriptionsQuietly()
-                }
-            }
-        }
+        // Continuous polling is disabled to protect Firestore's free read quota.
+        boardPollJob?.cancel()
+        boardPollJob = null
+        refreshFreshnessIndicators()
     }
 
     fun onBoardHidden() {
@@ -470,24 +489,19 @@ class IpoBoardViewModel(
         boardPollJob = null
     }
 
-    private suspend fun refreshBoardSubscriptionsQuietly() {
-        if (isRefreshing.value || isRefreshingGmp.value) return
-        runCatching {
-            ipoRepository.refreshLiveSubscriptionsOnly(force = true)
-        }.onSuccess { result ->
-            LiveSubscriptionRepository.formatSourceStatuses(result.sourceStatuses)?.let {
-                subscriptionSourcesStatusLine.value = it
-            }
-            if (result.hasLiveSourceData && result.syncedAtLabel.isNotBlank()) {
-                lastSuccessfulSyncLabel = result.syncedAtLabel
-                lastSyncedLabel.value = result.syncedAtLabel
-                lastSyncEpochMs = System.currentTimeMillis()
-            } else {
-                lastSyncedLabel.value = lastSuccessfulSyncLabel?.let {
-                    "Last updated $it (couldn't refresh now)"
-                } ?: lastSyncedLabel.value
-            }
+    internal fun refreshFreshnessIndicators(nowMs: Long = clockMs()) {
+        val bundleTs = dataUpdatedAtMs.value
+        if (bundleTs > 0L) {
+            applyBundleFreshnessTimestamp(bundleTs, nowMs)
         }
+    }
+
+    private fun applyBundleFreshnessTimestamp(bundleTs: Long, nowMs: Long) {
+        dataUpdatedAtMs.value = bundleTs
+        val label = LiveIpoCloudRepository.formatUpdatedAgoLabel(bundleTs, nowMs)
+        lastSuccessfulSyncLabel = label
+        lastSyncedLabel.value = label
+        isDataDelayed.value = LiveIpoCloudRepository.isDataDelayed(bundleTs, nowMs)
     }
 
     fun setBoardFilter(filter: BoardFilter) {
@@ -546,33 +560,56 @@ class IpoBoardViewModel(
         viewModelScope.launch {
             isRefreshingGmp.value = true
             try {
-                val gmpSummary = ipoRepository.syncWithLiveGmp()
+                val gmpSummary = ipoRepository.syncWithLiveGmp(forceManual = true)
                 applyGmpSummary(gmpSummary, manualTap = true)
-                dispatchSyncNotifications(gmpSummary)
+                if (!gmpSummary.skippedByRefreshGuard && gmpSummary.activeSources.isNotEmpty()) {
+                    dispatchSyncNotifications(gmpSummary)
+                }
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                val failureLabel = lastSuccessfulSyncLabel?.let {
+                    "Last updated $it (couldn't refresh now)"
+                } ?: "Couldn't refresh now"
+                lastSyncedLabel.value = failureLabel
+                gmpStatusMessage.value = failureLabel
             } finally {
                 isRefreshingGmp.value = false
             }
         }
     }
 
-    fun refreshMarketPulse() {
+    fun refreshMarketPulse(isManual: Boolean = false) {
         if (isRefreshing.value) return
         viewModelScope.launch {
             isRefreshing.value = true
             isRefreshingGmp.value = true
             try {
-                val gmpDeferred = async { ipoRepository.syncWithLiveGmp() }
-                val newsDeferred = async {
-                    newsRepository.fetchLatestNews(IpoSeedData.createInitialCatalog())
+                val (gmpSummary, newsResult) = coroutineScope {
+                    val gmpDeferred = async { ipoRepository.syncWithLiveGmp(forceManual = isManual) }
+                    val newsDeferred = async {
+                        newsRepository.fetchLatestNews(IpoSeedData.createInitialCatalog())
+                    }
+                    gmpDeferred.await() to newsDeferred.await()
                 }
-                val gmpSummary = gmpDeferred.await()
-                val newsResult = newsDeferred.await()
 
                 newsArticles.value = newsResult.articles
                 liveNewsSourcesLabel.value = newsResult.activeSourceNames.joinToString(" • ")
-                applyGmpSummary(gmpSummary, manualTap = false, hasLiveNews = newsResult.liveSourceCount > 0)
-                dispatchSyncNotifications(gmpSummary)
+                applyGmpSummary(gmpSummary, manualTap = isManual, hasLiveNews = newsResult.liveSourceCount > 0)
+                if (!gmpSummary.skippedByRefreshGuard && gmpSummary.activeSources.isNotEmpty()) {
+                    dispatchSyncNotifications(gmpSummary)
+                }
                 dispatchNewsNotifications(newsResult.articles)
+            } catch (e: kotlinx.coroutines.CancellationException) {
+                throw e
+            } catch (_: Exception) {
+                if (isManual) {
+                    val failureLabel = lastSuccessfulSyncLabel?.let {
+                        "Last updated $it (couldn't refresh now)"
+                    } ?: "Couldn't refresh now"
+                    lastSyncedLabel.value = failureLabel
+                    gmpStatusMessage.value = failureLabel
+                }
             } finally {
                 isRefreshing.value = false
                 isRefreshingGmp.value = false
@@ -610,9 +647,47 @@ class IpoBoardViewModel(
         manualTap: Boolean,
         hasLiveNews: Boolean = false,
     ) {
+        val nowMs = clockMs()
         LiveSubscriptionRepository.formatSourceStatuses(gmpSummary.subscriptionSourceStatuses)?.let {
             subscriptionSourcesStatusLine.value = it
         }
+        val bundleTs = gmpSummary.dataBundleLastSuccessAtMs
+        if (bundleTs > 0L) {
+            applyBundleFreshnessTimestamp(bundleTs, nowMs)
+            val freshnessLabel = lastSyncedLabel.value
+            if (gmpSummary.skippedByRefreshGuard) {
+                if (manualTap) {
+                    gmpStatusMessage.value = "$freshnessLabel • Recently synced"
+                }
+                return
+            }
+            if (gmpSummary.activeSources.isNotEmpty()) {
+                val distinctProviders = gmpSummary.activeSources
+                    .mapNotNull { IpoFilingVerifier.providerFamily(it).takeIf { f -> f.isNotBlank() } }
+                    .distinct()
+                val sourcesJoined = distinctProviders.ifEmpty { gmpSummary.activeSources }.joinToString(" • ")
+                liveGmpSourcesLabel.value = sourcesJoined
+                val countTotal = gmpSummary.updatedExistingCount + gmpSummary.discoveredLiveCount
+                gmpStatusMessage.value = if (countTotal > 0) {
+                    "Synced $countTotal IPOs ($sourcesJoined) • $freshnessLabel"
+                } else {
+                    "$sourcesJoined • $freshnessLabel"
+                }
+                lastSyncEpochMs = nowMs
+            } else if (manualTap) {
+                gmpStatusMessage.value = "$freshnessLabel (couldn't refresh now)"
+            }
+            return
+        }
+
+        if (gmpSummary.skippedByRefreshGuard) {
+            if (manualTap) {
+                gmpStatusMessage.value = lastSuccessfulSyncLabel?.let { "$it • Recently synced" }
+                    ?: "Recently synced"
+            }
+            return
+        }
+
         if (gmpSummary.activeSources.isNotEmpty()) {
             val distinctProviders = gmpSummary.activeSources
                 .mapNotNull { IpoFilingVerifier.providerFamily(it).takeIf { f -> f.isNotBlank() } }
@@ -632,7 +707,7 @@ class IpoBoardViewModel(
             }
             lastSuccessfulSyncLabel = gmpSummary.syncedAtTime
             lastSyncedLabel.value = gmpSummary.syncedAtTime
-            lastSyncEpochMs = System.currentTimeMillis()
+            lastSyncEpochMs = nowMs
         } else {
             val failureLabel = lastSuccessfulSyncLabel?.let {
                 "Last updated $it (couldn't refresh now)"
@@ -645,6 +720,8 @@ class IpoBoardViewModel(
     }
 
     internal fun currentLastSyncedLabelForTest(): String = lastSyncedLabel.value
+
+    internal fun currentIsDataDelayedForTest(): Boolean = isDataDelayed.value
 
     fun setThemePreference(preference: ThemePreference) {
         viewModelScope.launch {
@@ -810,6 +887,8 @@ class IpoBoardViewModel(
         val isRefreshingGmp: Boolean,
         val newsArticles: List<IpoNewsArticle>,
         val lastSyncedLabel: String,
+        val dataUpdatedAtMs: Long,
+        val isDataDelayed: Boolean,
         val liveGmpSourcesLabel: String,
         val gmpStatusMessage: String?,
         val subscriptionSourcesStatusLine: String?,

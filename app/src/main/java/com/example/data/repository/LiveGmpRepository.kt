@@ -76,7 +76,7 @@ data class LiveGmpSnapshot(
 )
 
 class LiveGmpRepository(
-    internal val enableNetworkFetch: Boolean = true,
+    internal val enableNetworkFetch: Boolean = false,
 ) {
     private val cookieJar = InMemorySessionCookieJar()
     private val lastNseWarmupMs = AtomicLong(0L)

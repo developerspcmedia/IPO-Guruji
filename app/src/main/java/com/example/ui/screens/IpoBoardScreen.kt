@@ -314,6 +314,7 @@ fun IpoBoardScreen(
                     item(key = "market_pulse") {
                         MarketPulseBanner(
                             lastSyncedLabel = uiState.lastSyncedLabel,
+                            isDataDelayed = uiState.isDataDelayed,
                             subscriptionSourcesStatusLine = uiState.subscriptionSourcesStatusLine,
                             isRefreshingGmp = uiState.isRefreshingGmp || uiState.isRefreshing,
                             onRefreshGmp = onRefreshGmp,
@@ -512,6 +513,7 @@ private fun TimelineSegmentedToggle(
 @Composable
 private fun MarketPulseBanner(
     lastSyncedLabel: String,
+    isDataDelayed: Boolean = false,
     subscriptionSourcesStatusLine: String? = null,
     isRefreshingGmp: Boolean,
     onRefreshGmp: () -> Unit,
@@ -597,6 +599,18 @@ private fun MarketPulseBanner(
                         overflow = TextOverflow.Ellipsis,
                         modifier = Modifier.testTag("last_sync_datetime"),
                     )
+                    if (isDataDelayed) {
+                        Spacer(modifier = Modifier.height(2.dp))
+                        Text(
+                            text = "Data may be delayed",
+                            style = MaterialTheme.typography.labelSmall.copy(fontSize = 10.sp),
+                            fontWeight = FontWeight.Medium,
+                            color = Color(0xFFFBBF24),
+                            maxLines = 1,
+                            overflow = TextOverflow.Ellipsis,
+                            modifier = Modifier.testTag("delayed_data_notice"),
+                        )
+                    }
                     if (!subscriptionSourcesStatusLine.isNullOrBlank()) {
                         Spacer(modifier = Modifier.height(2.dp))
                         Text(

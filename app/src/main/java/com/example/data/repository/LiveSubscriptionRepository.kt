@@ -82,7 +82,7 @@ data class LiveSubscriptionSnapshot(
  * source priority: Official NSE/BSE first, then Chittorgarh, InvestorGain, and IPOWatch.
  */
 class LiveSubscriptionRepository(
-    private val enableNetworkFetch: Boolean = true,
+    private val enableNetworkFetch: Boolean = false,
 ) {
     private val sessionCookieJar = InMemorySessionCookieJar()
 

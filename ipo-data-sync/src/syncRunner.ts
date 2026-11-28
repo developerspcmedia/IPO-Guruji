@@ -6,7 +6,8 @@ import type { SyncStore } from "./firestore.js";
 import {
   computeIposHash,
   MAX_BUNDLE_BYTES,
-  mergeIpoCatalog,
+  mergeIpoCatalogWithStats,
+  parseMaxIpos,
   trimBundleToByteLimit
 } from "./merge.js";
 import type { SyncPhases } from "./sources.js";
@@ -15,8 +16,12 @@ import type {
   RawIpoRecord,
   RawSubscriptionRecord,
   RunMode,
+  SelectionStats,
   SourceFetchResult
 } from "./types.js";
+
+/** Refresh unchanged bundle at least every 12h so per-item lastSeenAtMs stays well inside the 24h merge window. */
+const LAST_SEEN_REFRESH_INTERVAL_MS = 12 * 60 * 60 * 1000;
 
 export interface SyncRunSummary {
   runMode: RunMode;
@@ -29,6 +34,7 @@ export interface SyncRunSummary {
   ipoCount: number;
   bundleBytes: number;
   geminiCallsUsed: number;
+  selectionStats?: SelectionStats;
 }
 
 export function parseRunMode(raw: string | undefined): RunMode {
@@ -74,10 +80,13 @@ export interface RunSyncDependencies {
   runMode?: RunMode;
   nowMs?: number;
   maxBundleBytes?: number;
+  maxIpos?: number;
+  log?: (line: string) => void;
 }
 
 /**
- * Orchestrates read-before-write merge, unchanged-hash skip, 900 KB cap,
+ * Orchestrates read-before-write replacement selection, 24h per-field fallback,
+ * single-line JSON selection logging, unchanged-hash skip, 900 KB cap,
  * and meta-only write when every source fails.
  */
 export async function runSyncPipeline(
@@ -86,6 +95,8 @@ export async function runSyncPipeline(
   const nowMs = deps.nowMs ?? Date.now();
   const runMode = deps.runMode ?? "all";
   const maxBundleBytes = deps.maxBundleBytes ?? MAX_BUNDLE_BYTES;
+  const maxIpos = parseMaxIpos(deps.maxIpos ?? process.env.MAX_IPOS);
+  const log = deps.log ?? console.log;
 
   const [existingBundle, existingMeta] = await Promise.all([
     deps.store.readBundle(),
@@ -149,14 +160,34 @@ export async function runSyncPipeline(
   }
 
   const existingItems = existingBundle?.ipos ?? [];
-  const mergedIpos = mergeIpoCatalog(existingItems, allIpoRecords, allSubRecords, nowMs);
+  const { ipos: selectedIpos, stats: selectionStats } = mergeIpoCatalogWithStats(
+    existingItems,
+    allIpoRecords,
+    allSubRecords,
+    nowMs,
+    maxIpos
+  );
+
+  // Single-line structured JSON log after selection (no secrets, no raw HTML)
+  log(
+    JSON.stringify({
+      event: "ipo_selection",
+      maxIpos: selectionStats.maxIpos,
+      beforeCap: selectionStats.beforeCap,
+      afterCap: selectionStats.afterCap,
+      byStatus: selectionStats.byStatus,
+      byBoardType: selectionStats.byBoardType,
+      droppedByReason: selectionStats.droppedByReason,
+      fieldCoverage: selectionStats.fieldCoverage
+    })
+  );
 
   const candidateDoc: Omit<IpoLiveBundleDoc, "updatedAt"> = {
     version: 1,
     lastSuccessAt: new Date(nowMs).toISOString(),
     sourcesOk,
     sourcesFailed,
-    ipos: mergedIpos
+    ipos: selectedIpos
   };
 
   const trimmedDoc = trimBundleToByteLimit(candidateDoc, nowMs, maxBundleBytes);
@@ -171,7 +202,16 @@ export async function runSyncPipeline(
     ? nowMs
     : existingMeta?.lastCatalogSyncAtMs;
 
-  if (existingBundle && prevHash === nextHash) {
+  const needsLastSeenRefresh =
+    existingBundle !== null &&
+    existingBundle.ipos.some(
+      (item) =>
+        typeof item.lastSeenAtMs !== "number" ||
+        !Number.isFinite(item.lastSeenAtMs) ||
+        nowMs - item.lastSeenAtMs >= LAST_SEEN_REFRESH_INTERVAL_MS
+    );
+
+  if (existingBundle && prevHash === nextHash && !needsLastSeenRefresh) {
     await deps.store.writeMeta({
       lastRunMode: runMode,
       sourcesOk,
@@ -192,10 +232,12 @@ export async function runSyncPipeline(
       allSourcesFailed: false,
       ipoCount: trimmedDoc.ipos.length,
       bundleBytes,
-      geminiCallsUsed
+      geminiCallsUsed,
+      selectionStats
     };
   }
 
+  // Always REPLACE the entire bundle document (including ipos array)
   await deps.store.writeBundle(trimmedDoc);
   await deps.store.writeMeta({
     lastRunMode: runMode,
@@ -217,6 +259,7 @@ export async function runSyncPipeline(
     allSourcesFailed: false,
     ipoCount: trimmedDoc.ipos.length,
     bundleBytes,
-    geminiCallsUsed
+    geminiCallsUsed,
+    selectionStats
   };
 }

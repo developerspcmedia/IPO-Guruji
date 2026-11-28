@@ -49,8 +49,29 @@ const PLACEHOLDER_EXACT = new Set<string>([
   "recent ipo",
   "sr no",
   "s no",
-  "sl no"
+  "sl no",
+  "no records found",
+  "no data found",
+  "no data available",
+  "view more",
+  "load more",
+  "see all",
+  "click here",
+  "advertisement"
 ]);
+
+const WITHDRAWN_REGEX =
+  /\b(withdrawn|cancelled|canceled|postponed|deferred|abandoned|lapsed|rejected)\b/i;
+
+/** Returns true if a company name or status text indicates a withdrawn/cancelled IPO. */
+export function isWithdrawnOrCancelled(
+  ...texts: Array<string | null | undefined>
+): boolean {
+  for (const t of texts) {
+    if (t && WITHDRAWN_REGEX.test(t)) return true;
+  }
+  return false;
+}
 
 /** Cleans HTML/source suffixes like "(NSE SME)", "IPO", "[Mainboard]" without stripping distinguishing words. */
 export function cleanCompanyName(raw: string): string {
@@ -83,9 +104,10 @@ export function isPlaceholderCompanyName(raw: string | null | undefined): boolea
   const alphaCount = (cleaned.match(/[a-zA-Z]/g) ?? []).length;
   if (alphaCount < 2) return true;
 
-  // Reject table header phrases
+  // Reject table header/footer phrases
   if (/^(company|ipo|issue)\s+name\b/i.test(lower)) return true;
   if (/^(total|grand\s+total)\b/i.test(lower)) return true;
+  if (/^(no\s+records|no\s+data|showing\s+\d)/i.test(lower)) return true;
 
   return false;
 }

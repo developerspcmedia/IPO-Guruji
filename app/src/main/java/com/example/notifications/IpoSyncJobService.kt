@@ -8,6 +8,7 @@ import com.example.data.preferences.UserPreferencesRepository
 import com.example.data.repository.AdminOverrideRepository
 import com.example.data.repository.IpoNewsRepository
 import com.example.data.repository.IpoRepository
+import com.example.data.repository.LiveIpoCloudRepository
 import com.example.widget.IpoLiveWidgetProvider
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -24,17 +25,20 @@ class IpoSyncJobService : JobService() {
             var shouldReschedule = false
             try {
                 val database = IpoDatabase.getInstance(applicationContext)
+                val prefs = UserPreferencesRepository(applicationContext)
                 val adminOverrideRepository = AdminOverrideRepository(
                     context = applicationContext,
                     overrideDao = database.adminOverrideDao(),
                 )
+                val liveIpoCloudRepository = LiveIpoCloudRepository(applicationContext)
                 val repository = IpoRepository(
                     ipoDao = database.ipoDao(),
                     adminOverrideRepository = adminOverrideRepository,
+                    liveIpoCloudRepository = liveIpoCloudRepository,
+                    preferencesRepository = prefs,
                 )
                 val newsRepository = IpoNewsRepository()
-                val prefs = UserPreferencesRepository(applicationContext)
-                val summary = repository.syncWithLiveGmp()
+                val summary = repository.syncWithLiveGmp(forceManual = false)
                 val cachedOverrides = adminOverrideRepository.getCachedOverridesSnapshot()
                 val effectivePreviousIpos = IpoOverrideMerger.applyOverridesToCatalog(
                     baseCatalog = summary.previousIpos,

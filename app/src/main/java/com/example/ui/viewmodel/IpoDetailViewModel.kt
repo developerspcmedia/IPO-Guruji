@@ -115,12 +115,9 @@ class IpoDetailViewModel(
     }
 
     /**
-     * Hybrid Live Subscription trigger on IPO Detail screen entry:
-     * 1. Uses calendar dates (IpoDateUtils.isBiddingOpenToday / closeDate) rather than stored status.
-     * 2. Immediately refreshes live subscription if cache is stale, missing breakdown, or next-morning
-     *    (~9:30 AM IST) catch-up is due after the close day.
-     * 3. Polls every 75s during weekday market hours (10:00 AM–5:15 PM IST) when bidding is open today,
-     *    and every 10 min on close day until 9:00 PM IST. Stops on weekends and on screen exit.
+     * Records the observed IPO freshness label on Detail screen entry.
+     * Continuous polling is disabled to protect Firestore's free read quota; users can still
+     * tap manual refresh (rate-limited to once per minute in IpoRepository).
      */
     fun onDetailScreenVisible(
         currentIpo: IpoEntity,
@@ -130,48 +127,7 @@ class IpoDetailViewModel(
         if (lastSuccessfulSyncedLabel == null && currentIpo.subscriptionUpdatedAtMs > 0L) {
             lastSuccessfulSyncedLabel = LiveSubscriptionRepository.formatTimeLabel(currentIpo.subscriptionUpdatedAtMs)
         }
-
-        val isOpenToday = IpoDateUtils.isBiddingOpenToday(
-            openDate = currentIpo.openDate,
-            closeDate = currentIpo.closeDate,
-            listingDate = currentIpo.listingDate,
-            status = currentIpo.status,
-            referenceTimeMs = nowMs,
-        )
-        val isClosingToday = LiveSubscriptionRepository.isClosingTodayIst(currentIpo.closeDate, nowMs)
-        val needsNextMorningCatchup = LiveSubscriptionRepository.shouldRunNextMorningCatchup(
-            closeDate = currentIpo.closeDate,
-            subscriptionUpdatedAtMs = currentIpo.subscriptionUpdatedAtMs,
-            nowMs = nowMs,
-        )
-
-        if (!hasAutoRefreshedOnOpen) {
-            hasAutoRefreshedOnOpen = true
-            val needsDetailEnrichment = currentIpo.dailySubscriptions.size < 2 ||
-                !currentIpo.hasLiveApplicationCounts ||
-                (currentIpo.qibSubX <= 0.0 && currentIpo.retailSubX <= 0.0)
-            val shouldAutoFetch = isOpenToday ||
-                isClosingToday ||
-                needsNextMorningCatchup ||
-                currentIpo.status == IpoStatus.PRE_APPLY ||
-                currentIpo.status == IpoStatus.CLOSED
-            if (shouldAutoFetch && (needsNextMorningCatchup || ipoRepository.isSubscriptionCacheStale() || needsDetailEnrichment)) {
-                refreshLiveSubscription(force = true, silentStatusOnNoChange = true)
-            }
-        }
-
-        val pollIntervalMs = LiveSubscriptionRepository.resolveDetailPollIntervalMs(
-            openDate = currentIpo.openDate,
-            closeDate = currentIpo.closeDate,
-            listingDate = currentIpo.listingDate,
-            status = currentIpo.status,
-            nowMs = nowMs,
-        )
-        if (pollIntervalMs != null) {
-            startMarketHoursAutoPoll(pollIntervalMs)
-        } else {
-            stopMarketHoursAutoPoll()
-        }
+        stopMarketHoursAutoPoll()
     }
 
     fun onDetailScreenHidden() {

@@ -561,4 +561,54 @@ test("ipo_admin_notes is strictly admin-only and rejects signed-out users, regul
   await assertSucceeds(adminNoteRef.delete());
 });
 
+test("ipo_live_bundle and ipo_live_meta allow public get only; list and all writes are denied", async () => {
+  await testEnv.withSecurityRulesDisabled(async (ctx) => {
+    const db = ctx.firestore();
+    await db.collection("ipo_live_bundle").doc("current").set({
+      version: 1,
+      lastSuccessAt: "2026-11-27T06:00:00.000Z",
+      sourcesOk: ["chittorgarh", "investorgain"],
+      sourcesFailed: [],
+      ipos: [],
+    });
+    await db.collection("ipo_live_meta").doc("status").set({
+      lastRunAt: "2026-11-27T06:00:00.000Z",
+      ok: true,
+    });
+  });
+
+  const unauthDb = testEnv.unauthenticatedContext().firestore();
+  const userDb = testEnv.authenticatedContext("user-bundle-1", {
+    email: "reader@example.com",
+    email_verified: true,
+  }).firestore();
+  const adminDb = testEnv.authenticatedContext("admin-bundle-1", {
+    email: ADMIN_EMAIL,
+    email_verified: true,
+  }).firestore();
+
+  for (const [collectionName, docId] of [
+    ["ipo_live_bundle", "current"],
+    ["ipo_live_meta", "status"],
+  ]) {
+    // Public and authenticated single-document get must succeed
+    await assertSucceeds(unauthDb.collection(collectionName).doc(docId).get());
+    await assertSucceeds(userDb.collection(collectionName).doc(docId).get());
+    await assertSucceeds(adminDb.collection(collectionName).doc(docId).get());
+
+    // Collection list must fail for everyone (including admin)
+    await assertFails(unauthDb.collection(collectionName).get());
+    await assertFails(userDb.collection(collectionName).get());
+    await assertFails(adminDb.collection(collectionName).get());
+
+    // Create, update, and delete must fail for everyone (including admin — server-side Admin SDK only)
+    for (const db of [unauthDb, userDb, adminDb]) {
+      await assertFails(db.collection(collectionName).doc("new-doc").set({ version: 2 }));
+      await assertFails(db.collection(collectionName).doc(docId).update({ version: 2 }));
+      await assertFails(db.collection(collectionName).doc(docId).delete());
+    }
+  }
+});
+
+
 

@@ -1027,7 +1027,7 @@ fun AppNavigation(
                                     onSelectStatusFilter = boardViewModel::setStatusFilter,
                                     onSearchQueryChange = boardViewModel::setSearchQuery,
                                     onToggleSearch = boardViewModel::setSearchActive,
-                                    onRefresh = boardViewModel::refreshMarketPulse,
+                                    onRefresh = { boardViewModel.refreshMarketPulse(isManual = true) },
                                     onRefreshGmp = boardViewModel::refreshGmpNow,
                                     onOpenRadar = { navController.navigate(MarketRadarRoute) },
                                     onOpenSettings = { showSettingsSheet = true },

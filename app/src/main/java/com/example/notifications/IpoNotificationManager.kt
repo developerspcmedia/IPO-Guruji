@@ -76,7 +76,7 @@ object IpoNotificationManager {
     private const val ALLOTMENT_NOTIFICATION_BASE_ID = 30_000
     private const val NEWS_NOTIFICATION_BASE_ID = 40_000
     private const val SMART_ALERT_NOTIFICATION_BASE_ID = 50_000
-    private const val PERIODIC_INTERVAL_MS = 6L * 60L * 60L * 1000L
+    private const val PERIODIC_INTERVAL_MS = 60L * 60L * 1000L
     private const val ALLOTMENT_CHECK_INTERVAL_MS = 30L * 60L * 1000L
 
     fun hasNotificationPermission(context: Context): Boolean {

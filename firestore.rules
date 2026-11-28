@@ -306,5 +306,17 @@ service cloud.firestore {
 
       allow delete: if isAdmin() && isValidId(noteId);
     }
+
+    // --- COLLECTION 5: /ipo_live_bundle/{docId} ---
+    match /ipo_live_bundle/{docId} {
+      allow get: if true;
+      allow list, write: if false;
+    }
+
+    // --- COLLECTION 6: /ipo_live_meta/{docId} ---
+    match /ipo_live_meta/{docId} {
+      allow get: if true;
+      allow list, write: if false;
+    }
   }
 }

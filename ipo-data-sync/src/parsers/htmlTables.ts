@@ -1,6 +1,11 @@
 import * as cheerio from "cheerio";
 import { normalizeDateString, parseDateRange } from "../dates.js";
-import { cleanCompanyName, detectBoardType, isPlaceholderCompanyName } from "../normalize.js";
+import {
+  cleanCompanyName,
+  detectBoardType,
+  isPlaceholderCompanyName,
+  isWithdrawnOrCancelled
+} from "../normalize.js";
 import type { BoardType, RawIpoRecord, RawSubscriptionRecord } from "../types.js";
 import {
   parseGmpRupees,
@@ -211,11 +216,18 @@ export function parseHtmlGmpTables(
         registrarUrl = sanitizeHttpUrl(href);
       }
 
+      const statusText =
+        cols.status !== -1 && cols.status < cells.length
+          ? $(cells[cols.status]).text().replace(/\s+/g, " ").trim()
+          : "";
+      const isWithdrawn = isWithdrawnOrCancelled(rawNameCell, statusText) || undefined;
+
       results.push({
         companyName,
         boardType,
         source: sourceName,
         isAuthoritative: false,
+        isWithdrawn,
         openDate,
         closeDate,
         allotmentDate,

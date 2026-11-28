@@ -17,6 +17,7 @@ export const RawIpoRecordSchema = z.object({
   boardType: BoardTypeSchema,
   source: z.string().min(1),
   isAuthoritative: z.boolean().optional(),
+  isWithdrawn: z.boolean().optional(),
   statusHint: IpoStatusSchema.optional(),
   openDate: z.string().optional(),
   closeDate: z.string().optional(),

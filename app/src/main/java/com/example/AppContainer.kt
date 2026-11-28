@@ -7,6 +7,7 @@ import com.example.data.repository.AdminOverrideRepository
 import com.example.data.repository.AllotmentRepository
 import com.example.data.repository.IpoNewsRepository
 import com.example.data.repository.IpoRepository
+import com.example.data.repository.LiveIpoCloudRepository
 import com.example.data.repository.UsIpoRepository
 import com.example.data.repository.UserProfileRepository
 
@@ -28,10 +29,20 @@ class AppContainer(context: Context) {
         )
     }
 
+    val liveIpoCloudRepository: LiveIpoCloudRepository by lazy {
+        LiveIpoCloudRepository(appContext)
+    }
+
+    val preferencesRepository: UserPreferencesRepository by lazy {
+        UserPreferencesRepository(appContext)
+    }
+
     val ipoRepository: IpoRepository by lazy {
         IpoRepository(
             ipoDao = database.ipoDao(),
             adminOverrideRepository = adminOverrideRepository,
+            liveIpoCloudRepository = liveIpoCloudRepository,
+            preferencesRepository = preferencesRepository,
         )
     }
 
@@ -49,9 +60,5 @@ class AppContainer(context: Context) {
 
     val newsRepository: IpoNewsRepository by lazy {
         IpoNewsRepository()
-    }
-
-    val preferencesRepository: UserPreferencesRepository by lazy {
-        UserPreferencesRepository(appContext)
     }
 }

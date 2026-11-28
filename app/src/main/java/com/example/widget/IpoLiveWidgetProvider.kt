@@ -15,8 +15,13 @@ import com.example.data.local.IpoDatabase
 import com.example.data.local.IpoSeedData
 import com.example.data.model.IpoDateUtils
 import com.example.data.model.IpoEntity
+import com.example.data.model.IpoOverrideMerger
 import com.example.data.model.IpoStatus
+import com.example.data.preferences.UserPreferencesRepository
+import com.example.data.repository.AdminOverrideRepository
 import com.example.data.repository.IpoFilingVerifier
+import com.example.data.repository.IpoRepository
+import com.example.data.repository.LiveIpoCloudRepository
 import com.example.notifications.IpoNotificationManager
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -76,11 +81,31 @@ class IpoLiveWidgetProvider : AppWidgetProvider() {
         }
 
         internal suspend fun loadVerifiedWidgetIpos(context: Context): List<IpoEntity> {
+            val appCtx = context.applicationContext ?: context
+            val database = IpoDatabase.getInstance(appCtx)
+            val adminOverrideRepository = AdminOverrideRepository(
+                context = appCtx,
+                overrideDao = database.adminOverrideDao(),
+            )
+            val repository = IpoRepository(
+                ipoDao = database.ipoDao(),
+                adminOverrideRepository = adminOverrideRepository,
+                liveIpoCloudRepository = LiveIpoCloudRepository(appCtx),
+                preferencesRepository = UserPreferencesRepository(appCtx),
+            )
+            runCatching { repository.syncWithLiveGmp(forceManual = false) }
             val dbIpos = runCatching {
-                IpoDatabase.getInstance(context.applicationContext).ipoDao().getAllSnapshot()
+                database.ipoDao().getAllSnapshot()
             }.getOrDefault(emptyList())
             val source = if (dbIpos.isNotEmpty()) dbIpos else IpoSeedData.createInitialCatalog()
-            return source.filter { IpoFilingVerifier.isVerifiedFiledEntity(it) }
+            val cachedOverrides = runCatching {
+                adminOverrideRepository.getCachedOverridesSnapshot()
+            }.getOrDefault(emptyList())
+            val merged = IpoOverrideMerger.applyOverridesToCatalog(
+                baseCatalog = source,
+                overrides = cachedOverrides,
+            )
+            return merged.filter { IpoFilingVerifier.isVerifiedFiledEntity(it) }
         }
 
         fun selectTopWidgetIpos(allIpos: List<IpoEntity>): List<IpoEntity> {

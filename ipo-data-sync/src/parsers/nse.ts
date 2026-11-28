@@ -1,5 +1,10 @@
 import { normalizeDateString } from "../dates.js";
-import { cleanCompanyName, detectBoardType, isPlaceholderCompanyName } from "../normalize.js";
+import {
+  cleanCompanyName,
+  detectBoardType,
+  isPlaceholderCompanyName,
+  isWithdrawnOrCancelled
+} from "../normalize.js";
 import type { IpoStatus, RawIpoRecord, RawSubscriptionRecord } from "../types.js";
 import {
   parseInteger,
@@ -105,13 +110,16 @@ export function parseNseIpoJson(
     }
 
     const registrarName = asStr(row.registrar) || asStr(row.registrarName) || undefined;
-    const statusHint = mapNseStatus(asStr(row.status));
+    const rawStatus = asStr(row.status);
+    const statusHint = mapNseStatus(rawStatus);
+    const isWithdrawn = isWithdrawnOrCancelled(rawName, rawStatus) || undefined;
 
     results.push({
       companyName,
       boardType,
       source: sourceName,
       isAuthoritative: true,
+      isWithdrawn,
       statusHint,
       openDate,
       closeDate,

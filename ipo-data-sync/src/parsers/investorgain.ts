@@ -1,5 +1,10 @@
 import { normalizeDateString, parseFlexibleDateMs } from "../dates.js";
-import { cleanCompanyName, detectBoardType, isPlaceholderCompanyName } from "../normalize.js";
+import {
+  cleanCompanyName,
+  detectBoardType,
+  isPlaceholderCompanyName,
+  isWithdrawnOrCancelled
+} from "../normalize.js";
 import type { IpoStatus, RawIpoRecord, RawSubscriptionRecord } from "../types.js";
 import {
   parseGmpRupees,
@@ -138,13 +143,16 @@ export function parseInvestorGainJson(
       gmpRupees !== undefined ? parseIgTimestampMs(gmpUpdatedRaw, nowMs) : undefined;
 
     const registrarName = stripHtml(getField(row, ["Registrar", "~Registrar"])) || undefined;
-    const statusHint = mapIgStatus(getField(row, ["Status", "~IPO_Status", "IPO Status"]));
+    const rawStatus = stripHtml(getField(row, ["Status", "~IPO_Status", "IPO Status"]));
+    const statusHint = mapIgStatus(rawStatus);
+    const isWithdrawn = isWithdrawnOrCancelled(rawNameText, rawStatus) || undefined;
 
     results.push({
       companyName,
       boardType,
       source: sourceName,
       isAuthoritative: false,
+      isWithdrawn,
       statusHint,
       openDate,
       closeDate,

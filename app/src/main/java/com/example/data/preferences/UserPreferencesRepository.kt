@@ -6,6 +6,7 @@ import androidx.datastore.preferences.core.Preferences
 import androidx.datastore.preferences.core.booleanPreferencesKey
 import androidx.datastore.preferences.core.edit
 import androidx.datastore.preferences.core.intPreferencesKey
+import androidx.datastore.preferences.core.longPreferencesKey
 import androidx.datastore.preferences.core.stringPreferencesKey
 import androidx.datastore.preferences.core.stringSetPreferencesKey
 import androidx.datastore.preferences.preferencesDataStore
@@ -106,6 +107,8 @@ class UserPreferencesRepository(private val context: Context) {
         val BOOKMARKED_IPO_IDS = stringSetPreferencesKey("bookmarked_ipo_ids")
         val COMPACT_CARDS_ENABLED = booleanPreferencesKey("compact_cards_enabled")
         val BIOMETRIC_LOCK_ENABLED = booleanPreferencesKey("biometric_lock_enabled")
+        val LAST_CLOUD_READ_SUCCESS_MS = longPreferencesKey("last_cloud_read_success_ms")
+        val LAST_BUNDLE_SUCCESS_AT_MS = longPreferencesKey("last_bundle_success_at_ms")
     }
 
     val themePreference: Flow<ThemePreference> = context.dataStore.data.map { prefs ->
@@ -163,6 +166,38 @@ class UserPreferencesRepository(private val context: Context) {
 
     val biometricLockEnabled: Flow<Boolean> = context.dataStore.data.map { prefs ->
         prefs[Keys.BIOMETRIC_LOCK_ENABLED] ?: false
+    }
+
+    val lastCloudReadSuccessMs: Flow<Long> = context.dataStore.data.map { prefs ->
+        prefs[Keys.LAST_CLOUD_READ_SUCCESS_MS] ?: 0L
+    }
+
+    val lastBundleSuccessAtMs: Flow<Long> = context.dataStore.data.map { prefs ->
+        prefs[Keys.LAST_BUNDLE_SUCCESS_AT_MS] ?: 0L
+    }
+
+    suspend fun getLastCloudReadSuccessMs(): Long {
+        val prefs = context.dataStore.data.first()
+        return prefs[Keys.LAST_CLOUD_READ_SUCCESS_MS] ?: 0L
+    }
+
+    suspend fun getLastBundleSuccessAtMs(): Long {
+        val prefs = context.dataStore.data.first()
+        return prefs[Keys.LAST_BUNDLE_SUCCESS_AT_MS] ?: 0L
+    }
+
+    suspend fun recordCloudBundleSync(
+        readAtMs: Long,
+        bundleSuccessAtMs: Long,
+    ) {
+        context.dataStore.edit { prefs ->
+            if (readAtMs > 0L) {
+                prefs[Keys.LAST_CLOUD_READ_SUCCESS_MS] = readAtMs
+            }
+            if (bundleSuccessAtMs > 0L) {
+                prefs[Keys.LAST_BUNDLE_SUCCESS_AT_MS] = bundleSuccessAtMs
+            }
+        }
     }
 
     suspend fun getNotificationSnapshot(): NotificationPreferencesSnapshot {
